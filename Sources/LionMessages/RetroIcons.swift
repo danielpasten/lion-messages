@@ -4,8 +4,9 @@ import Foundation
 /// bird, YouTube's red tube…), shown in place of whatever the site uses today.
 ///
 /// The pictures ship inside the app (`RetroIcons/<name>.png`); nothing is fetched at run time.
-/// None are in yet: they are to be drawn for this app, after the originals (see the folder's
-/// README). Until a site's picture exists, its card keeps the icon it has today.
+/// For now they are the sites' original favicons, kept out of the repository (see the folder's
+/// README); icons drawn for this app are to replace them. Where a site's picture is missing,
+/// its card keeps the icon it has today.
 enum RetroIcons {
     /// Icon name → the hosts it stands for. A host matches itself and its subdomains.
     private static let sites: [(icon: String, hosts: [String])] = [

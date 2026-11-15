@@ -13,3 +13,5 @@ DerivedData/
 *.abcddb
 # Reference material (other sites' original icons): never committed.
 references/
+# Other sites' original 2012 icons: used locally for now, never committed.
+Sources/LionMessages/RetroIcons/*.png
