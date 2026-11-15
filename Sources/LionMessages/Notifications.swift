@@ -24,6 +24,11 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
     /// Notifications on screen, by conversation, so opening one clears its banners.
     private var delivered: [Int64: [String]] = [:]
     private var badgeCount = 0
+    /// Whether the user is reading a conversation right now (set by the app delegate, which knows
+    /// about popped-out windows). Without it: the main window's open conversation, while key.
+    var isReading: ((Int64) -> Bool)?
+    /// Brings a popped-out window forward for a clicked notification; false when there is none.
+    var openInPopOut: ((Int64) -> Bool)?
 
     init(store: AppStore, window: NSWindow, enabled: Bool) {
         self.store = store
@@ -77,7 +82,8 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
         guard isEnabled, let center else { return }
         for c in conversations {
             // Already reading it: Messages stays quiet too.
-            let reading = NSApp.isActive && window?.isKeyWindow == true && store?.selectedConversationID == c.id
+            let reading = isReading?(c.id)
+                ?? (NSApp.isActive && window?.isKeyWindow == true && store?.selectedConversationID == c.id)
             if reading { continue }
             let content = UNMutableNotificationContent()
             content.title = c.title
@@ -116,6 +122,10 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
         let id = (response.notification.request.content.userInfo["conversationID"] as? NSNumber)?.int64Value
         Task { @MainActor in
+            if let id, self.openInPopOut?(id) == true {
+                completionHandler()
+                return
+            }
             NSApp.activate(ignoringOtherApps: true)
             self.window?.makeKeyAndOrderFront(nil)
             if let id { self.store?.showConversation(id) }

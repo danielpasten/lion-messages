@@ -19,20 +19,26 @@ final class LionToolbarView: LionView {
     let audioCallButton: LionTexturedButton
     let videoCallButton: LionTexturedButton
 
-    init(onToggleSidebar: @escaping () -> Void, onRefresh: @escaping () -> Void, onCompose: @escaping () -> Void,
+    /// A popped-out conversation's toolbar: just the title and the call buttons.
+    private let compact: Bool
+
+    init(compact: Bool = false, onToggleSidebar: @escaping () -> Void, onRefresh: @escaping () -> Void, onCompose: @escaping () -> Void,
          onAudioCall: @escaping () -> Void, onVideoCall: @escaping () -> Void) {
         sidebarButton = LionTexturedButton(glyph: .sidebar, toolTip: "Show or Hide Conversations", action: onToggleSidebar)
         refreshButton = LionTexturedButton(glyph: .refresh, toolTip: "Refresh", action: onRefresh)
         composeButton = LionTexturedButton(glyph: .compose, toolTip: "Write a Message", action: onCompose)
         audioCallButton = LionTexturedButton(glyph: .phone, toolTip: "FaceTime Audio", action: onAudioCall)
         videoCallButton = LionTexturedButton(glyph: .video, toolTip: "FaceTime Video", action: onVideoCall)
+        self.compact = compact
         super.init(frame: .zero)
-        addSubview(sidebarButton)
-        addSubview(refreshButton)
-        addSubview(composeButton)
+        if !compact {
+            addSubview(sidebarButton)
+            addSubview(refreshButton)
+            addSubview(composeButton)
+        }
         addSubview(audioCallButton)
         addSubview(videoCallButton)
-        addSubview(searchField)
+        if !compact { addSubview(searchField) }
     }
 
     /// Calls need a 1:1 conversation; the tooltip says why the buttons are dimmed otherwise.
@@ -54,6 +60,11 @@ final class LionToolbarView: LionView {
         sidebarButton.frame = NSRect(x: 14, y: rowMid - 11.5, width: 34, height: 23)
         refreshButton.frame = NSRect(x: 54, y: rowMid - 11.5, width: 34, height: 23)
         composeButton.frame = NSRect(x: 94, y: rowMid - 11.5, width: 34, height: 23)
+        if compact {
+            videoCallButton.frame = NSRect(x: bounds.width - 14 - 34, y: rowMid - 11.5, width: 34, height: 23)
+            audioCallButton.frame = NSRect(x: bounds.width - 14 - 34 - 6 - 34, y: rowMid - 11.5, width: 34, height: 23)
+            return
+        }
         let searchWidth: CGFloat = min(206, max(120, bounds.width * 0.24))
         let halo = LionSearchField.halo
         searchField.frame = NSRect(x: bounds.width - searchWidth - 9 - halo, y: rowMid - 14 - halo,
@@ -126,6 +137,7 @@ struct ToolbarRepresentable: NSViewRepresentable {
 
     func makeNSView(context: Context) -> LionToolbarView {
         let view = LionToolbarView(
+            compact: store.isPopOut,
             onToggleSidebar: { [weak store] in store?.toggleSidebar() },
             onRefresh: { [weak store] in store?.refresh() },
             onCompose: { [weak store] in store?.focusComposer.send() },

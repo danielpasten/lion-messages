@@ -116,6 +116,15 @@ final class AppStore: ObservableObject {
     /// user, not spam, and not a filtered unknown sender).
     let newIncoming = PassthroughSubject<[Conversation], Never>()
 
+    /// Set for a conversation popped out into its own window: this store shows only that
+    /// conversation, has no list, and gets database changes from the main window's store.
+    let popOutConversationID: Int64?
+    var isPopOut: Bool { popOutConversationID != nil }
+    /// Stores of popped-out windows, told about every database change.
+    private let followers = NSHashTable<AppStore>.weakObjects()
+    /// Double-click / Open in New Window: the app delegate opens (or brings forward) the window.
+    let popOutRequested = PassthroughSubject<Int64, Never>()
+
     /// View ▸ Hide Conversations (persisted): the list is folded away even in a wide window.
     @Published private(set) var sidebarHiddenByUser: Bool
     /// The window is too narrow for the list beside the transcript, so it folds away.
@@ -175,7 +184,9 @@ final class AppStore: ObservableObject {
     init(service: MessagesService, linkPreviews: LinkPreviewService, pinOverrides: PinOverrides,
          placesCalls: Bool = true, forcePermissionScreen: Bool = false,
          initialSelectionIndex: Int = 0, buddyPicturesOverride: Bool? = nil,
-         filterUnknownOverride: Bool? = nil, initialScope: SidebarScope = .known) {
+         filterUnknownOverride: Bool? = nil, initialScope: SidebarScope = .known,
+         popOutConversationID: Int64? = nil) {
+        self.popOutConversationID = popOutConversationID
         self.service = service
         self.linkPreviews = linkPreviews
         self.pinOverrides = pinOverrides
@@ -414,6 +425,12 @@ final class AppStore: ObservableObject {
         guard !didBootstrap else { return }
         didBootstrap = true
         await reloadConversations()
+        if let id = popOutConversationID {
+            // A popped-out window: just its conversation. The main store watches the database
+            // and has already asked for Contacts.
+            select(id)
+            return
+        }
         let visible = visibleConversations
         if selectedConversationID == nil, !visible.isEmpty {
             let index = min(max(initialSelectionIndex, 0), visible.count - 1)
@@ -435,7 +452,8 @@ final class AppStore: ObservableObject {
             let list = try await service.loadConversations()
             messagesPinKeys = await service.pinnedConversationKeys()
             conversations = list
-            let fresh = incomingTracker.update(with: list).filter { c in
+            // Only the main window's store announces new messages (pop-outs see the same ones).
+            let fresh = isPopOut ? [] : incomingTracker.update(with: list).filter { c in
                 switch c.senderCategory {
                 case .known: return true
                 case .unknown: return !filtersUnknownSenders
@@ -444,7 +462,7 @@ final class AppStore: ObservableObject {
             }
             if !fresh.isEmpty { newIncoming.send(fresh) }
             applyFilter()
-            if let id = selectedConversationID, !list.contains(where: { $0.id == id }) {
+            if !isPopOut, let id = selectedConversationID, !list.contains(where: { $0.id == id }) {
                 select(list.first?.id)
             }
         } catch {
@@ -479,6 +497,7 @@ final class AppStore: ObservableObject {
     }
 
     private func databaseDidChange() {
+        for follower in followers.allObjects { follower.followDatabaseChange() }
         guard accessState == .granted else { return }
         if refreshInFlight {
             refreshPending = true
@@ -584,6 +603,7 @@ final class AppStore: ObservableObject {
 
     /// After switching lists: open the first conversation if the open one isn't in this list.
     private func selectFirstIfHidden() {
+        guard !isPopOut else { return }
         let visible = visibleConversations
         guard !visible.contains(where: { $0.id == selectedConversationID }) else { return }
         select(visible.first?.id)
@@ -639,11 +659,27 @@ final class AppStore: ObservableObject {
     // MARK: Conversation list
 
     /// The list sits beside the transcript (wide window, not hidden by the user).
-    var sidebarDocked: Bool { !sidebarHiddenByUser && !isNarrow }
+    var sidebarDocked: Bool { !isPopOut && !sidebarHiddenByUser && !isNarrow }
+
+    /// Opens a conversation in its own window.
+    func popOut(_ id: Int64) {
+        popOutRequested.send(id)
+    }
+
+    /// A popped-out window's store follows this one's database changes.
+    func addFollower(_ store: AppStore) {
+        followers.add(store)
+    }
+
+    /// The main store saw the database change.
+    fileprivate func followDatabaseChange() {
+        databaseDidChange()
+    }
 
     /// The toolbar button and View ▸ Show/Hide Conversations: in a narrow window the list slides
     /// in over the transcript; otherwise it is folded away or brought back beside it.
     func toggleSidebar() {
+        guard !isPopOut else { return }
         if isNarrow {
             sidebarOverlay.toggle()
         } else {

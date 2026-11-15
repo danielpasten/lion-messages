@@ -16,6 +16,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var cancellables: Set<AnyCancellable> = []
     private var notifications: NotificationController?
 
+    /// A conversation popped out into its own window, with its own store.
+    private final class PopOut {
+        let window: NSWindow
+        let store: AppStore
+        let delegate: PopOutWindowDelegate
+        var cancellables: Set<AnyCancellable> = []
+        init(window: NSWindow, store: AppStore, delegate: PopOutWindowDelegate) {
+            self.window = window; self.store = store; self.delegate = delegate
+        }
+    }
+
+    private var popOuts: [Int64: PopOut] = [:]
+    private var makePopOutStore: ((Int64) -> AppStore)?
+
+    /// The popped-out conversation in front, if a pop-out is the key (or main) window.
+    private var frontPopOut: PopOut? {
+        popOuts.values.first { $0.window === NSApp.keyWindow } ?? popOuts.values.first { $0.window === NSApp.mainWindow }
+    }
+    /// Menu commands act on the window in front: a pop-out's conversation, else the main window's.
+    private var frontStore: AppStore { frontPopOut?.store ?? store }
+    private var frontWindow: NSWindow { frontPopOut?.window ?? window }
+
     init(options: LaunchOptions) {
         self.options = options
         super.init()
@@ -61,8 +83,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                                               enabled: fetchPreviews)
         }
         // The demo's pins live in memory, so it never changes the real ones.
+        let pinOverrides = PinOverrides(defaults: options.demo ? nil : .standard)
+        let placesCalls = !options.demo, buddyPictures = options.buddyPictures
+        makePopOutStore = { id in
+            AppStore(service: service, linkPreviews: linkPreviews, pinOverrides: pinOverrides, placesCalls: placesCalls,
+                     buddyPicturesOverride: buddyPictures, popOutConversationID: id)
+        }
         store = AppStore(service: service, linkPreviews: linkPreviews,
-                         pinOverrides: PinOverrides(defaults: options.demo ? nil : .standard),
+                         pinOverrides: pinOverrides,
                          placesCalls: !options.demo, forcePermissionScreen: options.forcePermissionScreen,
                          initialSelectionIndex: options.selectIndex, buddyPicturesOverride: options.buddyPictures,
                          filterUnknownOverride: options.filterUnknown, initialScope: options.scope)
@@ -74,8 +102,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         // The demo never posts real notifications.
         let notify = NotificationController(store: store, window: window,
                                             enabled: !options.demo && UserDefaults.standard.bool(forKey: NotificationController.defaultsKey))
+        notify.isReading = { [weak self] id in
+            guard let self, NSApp.isActive else { return false }
+            if let popOut = self.popOuts[id], popOut.window.isKeyWindow { return true }
+            return self.window.isKeyWindow && self.store.selectedConversationID == id
+        }
+        notify.openInPopOut = { [weak self] id in
+            guard let popOut = self?.popOuts[id] else { return false }
+            NSApp.activate(ignoringOtherApps: true)
+            popOut.window.makeKeyAndOrderFront(nil)
+            return true
+        }
         notify.start()
         notifications = notify
+        store.popOutRequested
+            .sink { [weak self] id in self?.openPopOut(id) }
+            .store(in: &cancellables)
         store.start()
         if let presentError = options.presentError {
             after(0.5) { [weak self] in
@@ -112,7 +154,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             after(0.4) { [weak self] in self?.store.setDropTargeted(true) }
         }
         store.attachPanelRequested
-            .sink { [weak self] in self?.showAttachPanel() }
+            .sink { [weak self] in
+                guard let self else { return }
+                self.showAttachPanel(store: self.store, window: self.window)
+            }
             .store(in: &cancellables)
         if options.sequenceDir != nil {
             // `--sequence-on linkpreview`: frames start as a fetched preview reaches the transcript.
@@ -190,6 +235,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 guard ids.indices.contains(n) else { return }
                 self.beginSequence("media")
                 self.store.quickLook(attachmentID: ids[n])
+            }
+        }
+        if options.popOut {
+            after(1.0) { [weak self] in
+                guard let self, let id = self.store.selectedConversationID else { return }
+                self.beginSequence("popout")
+                self.openPopOut(id)
             }
         }
         if options.toggleSidebar {
@@ -298,7 +350,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     @objc private func showMainWindow(_ sender: Any?) { window.makeKeyAndOrderFront(nil) }
 
-    @objc private func attachFiles(_ sender: Any?) { store.requestAttachPanel() }
+    @objc private func attachFiles(_ sender: Any?) { frontStore.requestAttachPanel() }
+
+    // MARK: Pop-out conversations
+
+    @objc private func openInNewWindow(_ sender: Any?) {
+        guard let id = store.selectedConversationID else { return }
+        openPopOut(id)
+    }
+
+    /// Opens a conversation in its own window, or brings its window forward.
+    private func openPopOut(_ id: Int64) {
+        if let existing = popOuts[id] {
+            existing.window.makeKeyAndOrderFront(nil)
+            return
+        }
+        guard let make = makePopOutStore, let c = store.conversations.first(where: { $0.id == id }) else { return }
+        let popStore = make(id)
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 560),
+                         styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                         backing: .buffered, defer: false)
+        w.title = c.title
+        w.titleVisibility = .hidden
+        w.titlebarAppearsTransparent = true
+        w.titlebarSeparatorStyle = .none
+        w.isReleasedWhenClosed = false
+        w.minSize = NSSize(width: 360, height: 320)
+        w.tabbingMode = .disallowed
+        let hosting = LionHostingView(rootView: RootView(store: popStore))
+        hosting.store = popStore
+        hosting.sizingOptions = []
+        w.contentView = hosting
+        w.setContentSize(NSSize(width: 480, height: 560))
+        // Beside the main window's right edge, cascading for each further pop-out.
+        let main = window.frame
+        let offset = CGFloat(popOuts.count) * 24
+        w.setFrameTopLeftPoint(NSPoint(x: main.maxX - 480 + 40 + offset, y: main.maxY - 40 - offset))
+        let delegate = PopOutWindowDelegate { [weak self] in self?.popOuts[id] = nil }
+        w.delegate = delegate
+        let popOut = PopOut(window: w, store: popStore, delegate: delegate)
+        popStore.attachPanelRequested
+            .sink { [weak self, weak popStore, weak w] in
+                guard let self, let popStore, let w else { return }
+                self.showAttachPanel(store: popStore, window: w)
+            }
+            .store(in: &popOut.cancellables)
+        popOuts[id] = popOut
+        store.addFollower(popStore)
+        popStore.start()
+        w.makeKeyAndOrderFront(nil)
+    }
 
     @objc private func toggleNotifications(_ sender: Any?) {
         guard let notifications else { return }
@@ -310,7 +411,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     /// File ▸ Attach Files… and the composer's paperclip: a standard open panel as a sheet.
-    private func showAttachPanel() {
+    private func showAttachPanel(store: AppStore, window: NSWindow) {
         guard window.attachedSheet == nil else { return }
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
@@ -319,10 +420,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         panel.resolvesAliases = true
         panel.prompt = "Attach"
         panel.message = "Choose files to send."
-        panel.beginSheetModal(for: window) { [weak self] response in
-            guard let self else { return }
-            if response == .OK { self.store.addAttachments(panel.urls) }
-            self.store.focusComposer.send()
+        panel.beginSheetModal(for: window) { [weak store] response in
+            guard let store else { return }
+            if response == .OK { store.addAttachments(panel.urls) }
+            store.focusComposer.send()
         }
     }
 
@@ -340,12 +441,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     @objc private func togglePinned(_ sender: Any?) {
-        guard let c = store.selectedConversation else { return }
+        // Pins live in the main window's list, whichever window is in front.
+        guard let c = frontStore.selectedConversation else { return }
         store.setPinned(!store.isPinned(c), c)
     }
 
-    @objc private func startAudioCall(_ sender: Any?) { store.requestCall(.audio) }
-    @objc private func startVideoCall(_ sender: Any?) { store.requestCall(.video) }
+    @objc private func startAudioCall(_ sender: Any?) { frontStore.requestCall(.audio) }
+    @objc private func startVideoCall(_ sender: Any?) { frontStore.requestCall(.video) }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleBuddyPictures(_:)) {
@@ -372,8 +474,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             return scope.map { SidebarScope.scopes(filteringUnknown: store.filtersUnknownSenders).contains($0) } ?? false
                 && store.accessState == .granted
         }
+        if menuItem.action == #selector(openInNewWindow(_:)) {
+            return frontPopOut == nil && store?.selectedConversationID != nil
+        }
         if menuItem.action == #selector(togglePinned(_:)) {
-            guard let store, let c = store.selectedConversation else {
+            guard let store, let c = frontStore.selectedConversation else {
                 menuItem.title = "Pin Conversation"
                 return false
             }
@@ -382,10 +487,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             return pinned || c.senderCategory != .spam
         }
         if menuItem.action == #selector(startAudioCall(_:)) || menuItem.action == #selector(startVideoCall(_:)) {
-            return store?.canCall == true
+            return store != nil && frontStore.canCall
         }
         if menuItem.action == #selector(attachFiles(_:)) {
-            return store?.canAcceptAttachments == true && window.attachedSheet == nil
+            return store != nil && frontStore.canAcceptAttachments && frontWindow.attachedSheet == nil
         }
         return true
     }
@@ -553,6 +658,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         main.addItem(withTitle: "View", action: nil, keyEquivalent: "").submenu = view
 
         let conversation = NSMenu(title: "Conversation")
+        let popOutItem = conversation.addItem(withTitle: "Open in New Window", action: #selector(openInNewWindow(_:)),
+                                              keyEquivalent: "o")
+        popOutItem.target = self
+        conversation.addItem(.separator())
         let pin = conversation.addItem(withTitle: "Pin Conversation", action: #selector(togglePinned(_:)), keyEquivalent: "p")
         pin.keyEquivalentModifierMask = [.command, .shift]
         pin.target = self
@@ -584,4 +693,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
         return main
     }
+}
+
+/// Tells the app delegate when a popped-out conversation's window closes.
+private final class PopOutWindowDelegate: NSObject, NSWindowDelegate {
+    private let onClose: () -> Void
+    init(onClose: @escaping () -> Void) { self.onClose = onClose }
+    func windowWillClose(_ notification: Notification) { onClose() }
 }

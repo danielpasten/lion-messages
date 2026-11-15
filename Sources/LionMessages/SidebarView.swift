@@ -61,6 +61,9 @@ final class SidebarController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         let menu = NSMenu()
         menu.delegate = self
         tableView.menu = menu
+        // Double-click opens the conversation in its own window, like Messages.
+        tableView.target = self
+        tableView.doubleAction = #selector(openClickedInNewWindow(_:))
         activeFader.onChange = { [weak self] in self?.applyActiveFraction() }
         scrollView.documentView = tableView
         scrollView.drawsBackground = true
@@ -282,6 +285,7 @@ final class SidebarController: NSObject, NSTableViewDataSource, NSTableViewDeleg
             view.identifier = id
             view.onSelect = { [weak self] c in self?.selectFromPins(c) }
             view.onUnpin = { [weak self] c in self?.store?.setPinned(false, c) }
+            view.onPopOut = { [weak self] c in self?.store?.popOut(c.id) }
             configurePins(view)
             pinsView = view
             return view
@@ -329,7 +333,27 @@ final class SidebarController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         menu.removeAllItems()
         let row = tableView.clickedRow
         guard row >= 0, row < items.count, let c = items[row].conversation, let store else { return }
+        addPopOutItem(to: menu, for: c)
         addPinItem(to: menu, for: c, store: store)
+    }
+
+    fileprivate func addPopOutItem(to menu: NSMenu, for c: Conversation) {
+        let item = NSMenuItem(title: "Open in New Window", action: #selector(popOut(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = c.id
+        menu.addItem(item)
+        menu.addItem(.separator())
+    }
+
+    @objc private func popOut(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? Int64 else { return }
+        store?.popOut(id)
+    }
+
+    @objc private func openClickedInNewWindow(_ sender: Any?) {
+        let row = tableView.clickedRow
+        guard row >= 0, row < items.count, let c = items[row].conversation else { return }
+        store?.popOut(c.id)
     }
 
     fileprivate func addPinItem(to menu: NSMenu, for c: Conversation, store: AppStore) {

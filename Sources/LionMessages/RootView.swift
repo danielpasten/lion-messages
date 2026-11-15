@@ -50,7 +50,15 @@ struct RootView: View {
         .animation(LionMotion.easeInOut(LionMotion.screenCrossfade), value: store.accessState)
     }
 
-    private var conversationUI: some View {
+    @ViewBuilder private var conversationUI: some View {
+        if store.isPopOut {
+            conversationColumn
+        } else {
+            mainConversationUI
+        }
+    }
+
+    private var mainConversationUI: some View {
         let p = LionTheme.palette(for: scheme)
         let slide: AnyTransition = LionMotion.reduceMotion ? .opacity : .move(edge: .leading)
         return ZStack(alignment: .leading) {

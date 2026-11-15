@@ -3,7 +3,7 @@
 <img src="docs/icon.png" width="128" alt="Lion Messages icon">
 
 A personal macOS Messages client dressed as a Mac OS X Lion (10.7) app: Lucida Grande,
-a brushed-gray unified toolbar, a Finder-style source list, glossy iChat bubbles, a sunken
+a brushed-gray unified toolbar, a Finder-style source list, glossy speech-balloon bubbles redrawn after Messages for Mac's original 2012 artwork, a sunken
 Aqua composer, and a graphite dark mode.
 
 It reads your local Messages database read-only and sends through Messages.app. There is no
@@ -44,6 +44,8 @@ Screenshots show the built-in demo data, not real conversations.
   and a click opens the conversation. None for the conversation you're reading, your own
   messages, spam, or filtered unknown senders. Messages.app posts its own notifications too; to
   avoid seeing both, turn Messages' off in System Settings ▸ Notifications
+- Pop-out conversations: double-click a conversation (or a pin), right-click ▸ Open in New
+  Window, or Conversation ▸ Open in New Window (⌘O) to give it its own window with its own draft
 - Narrow windows: below about 640 points wide the conversation list folds away; the toolbar's
   list button (or View ▸ Show Conversations, ⌃⌘S) slides it in over the conversation. In a
   wide window the same button hides or shows the list

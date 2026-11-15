@@ -57,6 +57,8 @@ struct LaunchOptions {
     /// conversation in Quick Look, `--open-media-after` seconds after launch (default 1).
     var openMedia: Int?
     var openMediaAfter = 1.0
+    /// `--pop-out`: open the selected conversation in its own window shortly after launch.
+    var popOut = false
     /// `--toggle-sidebar`: press the toolbar's conversation list button shortly after launch.
     var toggleSidebar = false
     /// `--toggle-buddy-pictures-after s`: flip the setting once, live (not persisted), to test it.
@@ -144,6 +146,7 @@ struct LaunchOptions {
             case "--open-media": o.openMedia = value().flatMap(Int.init)
             case "--open-media-after": o.openMediaAfter = value().flatMap(Double.init) ?? o.openMediaAfter
             case "--toggle-sidebar": o.toggleSidebar = true
+            case "--pop-out": o.popOut = true
             case "--toggle-buddy-pictures-after": o.toggleBuddyPicturesAfter = value().flatMap(Double.init)
             default: break // Ignore unknown flags (e.g. -NSDocumentRevisionsDebugMode from Xcode).
             }

@@ -27,6 +27,7 @@ final class SidebarPinsView: NSView {
     var activeFraction: CGFloat = 1 { didSet { if activeFraction != oldValue { needsDisplay = true } } }
     var onSelect: (Conversation) -> Void = { _ in }
     var onUnpin: (Conversation) -> Void = { _ in }
+    var onPopOut: (Conversation) -> Void = { _ in }
 
     private var pressedIndex: Int? { didSet { if pressedIndex != oldValue { needsDisplay = true } } }
 
@@ -126,17 +127,28 @@ final class SidebarPinsView: NSView {
             if next.type == .leftMouseUp { break }
         }
         pressedIndex = nil
-        if inside, start < conversations.count { onSelect(conversations[start]) }
+        guard inside, start < conversations.count else { return }
+        if event.clickCount == 2 { onPopOut(conversations[start]) } else { onSelect(conversations[start]) }
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let i = index(at: convert(event.locationInWindow, from: nil)) else { return nil }
         let menu = NSMenu()
+        let open = NSMenuItem(title: "Open in New Window", action: #selector(popOut(_:)), keyEquivalent: "")
+        open.target = self
+        open.tag = i
+        menu.addItem(open)
+        menu.addItem(.separator())
         let item = NSMenuItem(title: "Unpin", action: #selector(unpin(_:)), keyEquivalent: "")
         item.target = self
         item.tag = i
         menu.addItem(item)
         return menu
+    }
+
+    @objc private func popOut(_ sender: NSMenuItem) {
+        guard sender.tag < conversations.count else { return }
+        onPopOut(conversations[sender.tag])
     }
 
     @objc private func unpin(_ sender: NSMenuItem) {
