@@ -558,10 +558,12 @@ final class LinkCardView: ClickableView {
         } else {
             imageSlot.set(nil, async: false)
         }
-        if let url = preview.iconFileURL {
+        // A site's 2012 icon, when the app ships one, stands in for today's.
+        let retro = RetroIcons.icon(for: preview.url)
+        if let url = retro?.file ?? preview.iconFileURL {
             let side = CardLayout.iconSize
             let size = MediaGeometry.pixelSize(of: url) ?? CGSize(width: side, height: side)
-            iconSlot.set(.init(id: "i\(messageID)", url: url, kind: .image,
+            iconSlot.set(.init(id: retro.map { "retro-\($0.name)" } ?? "i\(messageID)", url: url, kind: .image,
                                maxPixel: MediaLoader.maxPixel(source: size, display: CGSize(width: side, height: side),
                                                               scale: scale)), async: async)
         } else {

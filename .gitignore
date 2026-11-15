@@ -11,3 +11,5 @@ DerivedData/
 *.db-shm
 *.sqlite
 *.abcddb
+# Reference material (other sites' original icons): never committed.
+references/

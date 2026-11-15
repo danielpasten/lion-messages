@@ -20,7 +20,9 @@ let package = Package(
         // The Lion-styled SwiftUI/AppKit app.
         .executableTarget(
             name: "LionMessages",
-            dependencies: ["MessagesModel", "MessagesData"]
+            dependencies: ["MessagesModel", "MessagesData"],
+            // 2012 site icons for link cards (see RetroIcons.swift).
+            resources: [.copy("RetroIcons")]
         ),
         .testTarget(name: "MessagesDataTests", dependencies: ["MessagesData"]),
     ],
