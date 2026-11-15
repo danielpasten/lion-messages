@@ -576,6 +576,7 @@ final class MessageCell: NSView {
     private var partViews: [NSView] = []
     private var partKinds: [Int] = []
     private let avatarView = BuddyPictureView()
+    private let reactionView = ReactionBadgeView()
     private var geometry: MessageGeometry?
     /// Off for offscreen copies that only need what's already cached.
     var loadsAsync = true
@@ -590,6 +591,8 @@ final class MessageCell: NSView {
         super.init(frame: frameRect)
         addSubview(avatarView)
         avatarView.isHidden = true
+        addSubview(reactionView)
+        reactionView.isHidden = true
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -636,6 +639,7 @@ final class MessageCell: NSView {
             }
         }
         avatarView.image = avatar
+        reactionView.reactions = m.reactions
         applyHidden()
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
@@ -648,7 +652,8 @@ final class MessageCell: NSView {
             case .card(let p, _, _): return p.title ?? p.url.host
             }
         }.joined(separator: ", ")
-        setAccessibilityLabel(m.isFromMe ? "You: \(text)" : "\(m.senderName ?? "Them"): \(text)")
+        let reacted = m.reactions.isEmpty ? "" : ". " + ReactionBadge.summary(m.reactions)
+        setAccessibilityLabel((m.isFromMe ? "You: \(text)" : "\(m.senderName ?? "Them"): \(text)") + reacted)
         needsLayout = true
     }
 
@@ -657,6 +662,7 @@ final class MessageCell: NSView {
     private func applyHidden() {
         partViews.forEach { $0.isHidden = isArriving }
         avatarView.isHidden = isArriving || geometry?.avatarY == nil
+        reactionView.isHidden = isArriving || (geometry?.reactionWidth ?? 0) == 0
     }
 
     override func layout() {
@@ -670,6 +676,7 @@ final class MessageCell: NSView {
             }
         }
         if let a = g.avatarFrame(cellWidth: w) { avatarView.frame = a }
+        if let r = g.reactionFrame(cellWidth: w) { reactionView.frame = r }
     }
 
     /// An offscreen row configured exactly like a table cell (the arrival animation pictures it,

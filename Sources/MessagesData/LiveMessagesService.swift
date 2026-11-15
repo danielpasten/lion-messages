@@ -60,6 +60,14 @@ public final class LiveMessagesService: MessagesService {
         }
     }
 
+    public func pinnedConversationKeys() async -> [String] {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: MessagesPinning.pinnedKeys())
+            }
+        }
+    }
+
     public func startWatching(onChange: @escaping () -> Void) {
         watcher.start(onChange: onChange)
     }

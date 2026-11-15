@@ -175,6 +175,114 @@ final class ChatDatabaseTests: XCTestCase {
         XCTAssertEqual(messages.map(\.text), ["first", "second"])
     }
 
+    func testSenderCategories() async throws {
+        let path = dir.appendingPathComponent("filtered.db").path
+        let fx = try FixtureDB(path: path)
+        fx.exec(FixtureDB.fullSchema)
+        fx.exec("ALTER TABLE chat ADD COLUMN is_blackholed INTEGER DEFAULT 0")
+        fx.exec("""
+            INSERT INTO handle (ROWID, id, service) VALUES (1, '+15559990001', 'SMS'), (2, '+15559990002', 'SMS'),
+                (3, '+15551230001', 'iMessage'), (4, '+15559990004', 'SMS'), (5, '+15559990005', 'SMS'),
+                (6, '+15559990006', 'SMS');
+            INSERT INTO chat (ROWID, guid, style, chat_identifier, service_name, is_filtered, is_blackholed) VALUES
+                (1, 'SMS;-;+15559990001', 45, '+15559990001', 'SMS', 1, 0),
+                (2, 'SMS;-;+15559990002', 45, '+15559990002', 'SMS', 1, 0),
+                (3, 'iMessage;-;+15551230001', 45, '+15551230001', 'iMessage', 1, 0),
+                (4, 'SMS;-;+15559990004', 45, '+15559990004', 'SMS', 2, 0),
+                (5, 'SMS;-;+15559990005', 45, '+15559990005', 'SMS', 0, 1),
+                (6, 'SMS;-;+15559990006', 45, '+15559990006', 'SMS', 0, 0);
+            INSERT INTO chat_handle_join VALUES (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6);
+            """)
+        // 1: filtered, never answered. 2: filtered, but answered. 3: filtered, but a contact.
+        // 4: junk. 5: blocked. 6: never filtered.
+        for chat in Int64(1)...6 { addMessage(fx, chat: chat, text: "hi \(chat)", handle: chat, date: ns(chat)) }
+        addMessage(fx, chat: 2, text: "who's this?", fromMe: true, date: ns(20))
+        fx.close()
+
+        let convs = try await makeService(path: path).loadConversations()
+        let byID = Dictionary(uniqueKeysWithValues: convs.map { ($0.id, $0.senderCategory) })
+        XCTAssertEqual(byID, [1: .unknown, 2: .known, 3: .known, 4: .spam, 5: .spam, 6: .known])
+    }
+
+    func testPinKeysFromMessagesPreferences() {
+        let data: [String: Any] = [
+            "pP": ["+15551230001", "IMESSAGE;+;CHAT100", "Friend@Example.com", "+15551230001", 42, "  "],
+            "pV": 2,
+        ]
+        XCTAssertEqual(MessagesPinning.keys(fromPinData: data), ["+15551230001", "chat100", "friend@example.com"])
+        XCTAssertEqual(MessagesPinning.keys(fromPinData: nil), [])
+        XCTAssertEqual(MessagesPinning.keys(fromPinData: ["pP": "nope"]), [])
+    }
+
+    func testPinKeyMatchesConversations() async throws {
+        let convs = try await makeService().loadConversations()
+        let keys = Set(MessagesPinning.keys(fromPinData: ["pP": ["IMESSAGE;+;CHAT100", "+15551230001"]]))
+        XCTAssertEqual(convs.filter { keys.contains($0.pinKey) }.map(\.id).sorted(), [1, 2])
+    }
+
+    func testReactionResolver() {
+        typealias R = ReactionResolver.Row
+        let rows: [R] = [
+            R(targetGUID: "p:0/A", type: 2000, emoji: nil, isFromMe: false, handle: "+1", senderName: "Alex"),
+            R(targetGUID: "p:0/A", type: 2001, emoji: nil, isFromMe: true, handle: nil, senderName: nil),
+            // Alex changes their mind: the like replaces the love.
+            R(targetGUID: "p:0/A", type: 2001, emoji: nil, isFromMe: false, handle: "+1", senderName: "Alex"),
+            // A removal of something else does nothing; of the current one removes it.
+            R(targetGUID: "p:0/A", type: 3003, emoji: nil, isFromMe: true, handle: nil, senderName: nil),
+            R(targetGUID: "bp:B", type: 2006, emoji: "🔥", isFromMe: false, handle: "+2", senderName: "Sam"),
+            R(targetGUID: "p:1/C", type: 2003, emoji: nil, isFromMe: true, handle: nil, senderName: nil),
+            R(targetGUID: "p:1/C", type: 3003, emoji: nil, isFromMe: true, handle: nil, senderName: nil),
+            R(targetGUID: "p:0/D", type: 2006, emoji: "  ", isFromMe: true, handle: nil, senderName: nil),
+            R(targetGUID: "p:0/D", type: 2007, emoji: nil, isFromMe: true, handle: nil, senderName: nil),
+        ]
+        let result = ReactionResolver.resolve(rows)
+        XCTAssertEqual(result["A"], [
+            Reaction(kind: .like, isFromMe: true, senderHandle: nil, senderName: nil),
+            Reaction(kind: .like, isFromMe: false, senderHandle: "+1", senderName: "Alex"),
+        ])
+        XCTAssertEqual(result["B"], [Reaction(kind: .emoji("🔥"), isFromMe: false, senderHandle: "+2", senderName: "Sam")])
+        XCTAssertNil(result["C"])
+        XCTAssertNil(result["D"])
+    }
+
+    func testReactionsLoadWithMessages() async throws {
+        let path = dir.appendingPathComponent("reactions.db").path
+        let fx = try FixtureDB(path: path)
+        fx.exec(FixtureDB.fullSchema)
+        fx.exec("ALTER TABLE message ADD COLUMN associated_message_emoji TEXT")
+        fx.exec("""
+            INSERT INTO handle (ROWID, id, service) VALUES (1, '+15551230001', 'iMessage');
+            INSERT INTO chat (ROWID, guid, style, chat_identifier, service_name) VALUES
+                (1, 'iMessage;-;+15551230001', 45, '+15551230001', 'iMessage');
+            INSERT INTO chat_handle_join VALUES (1, 1);
+            """)
+        addMessage(fx, chat: 1, text: "Dinner at 7?", handle: 1, date: ns(1))
+        let first = "MSG-\(msgID)"
+        addMessage(fx, chat: 1, text: "Perfect", fromMe: true, date: ns(2))
+        let second = "MSG-\(msgID)"
+        fx.run("""
+            INSERT INTO message (ROWID, guid, text, handle_id, date, is_from_me, associated_message_guid,
+                associated_message_type, associated_message_emoji) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [100, "R1", "Liked “Dinner at 7?”", 0, ns(3), 1, "p:0/" + first, 2001, nil])
+        fx.run("INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (1, 100, ?)", [ns(3)])
+        fx.run("""
+            INSERT INTO message (ROWID, guid, text, handle_id, date, is_from_me, associated_message_guid,
+                associated_message_type, associated_message_emoji) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [101, "R2", "Reacted 🎉", 1, ns(4), 0, "p:0/" + second, 2006, "🎉"])
+        fx.run("INSERT INTO chat_message_join (chat_id, message_id, message_date) VALUES (1, 101, ?)", [ns(4)])
+        fx.close()
+
+        let service = makeService(path: path)
+        let convs = try await service.loadConversations()
+        let conv = try XCTUnwrap(convs.first)
+        XCTAssertEqual(conv.lastMessagePreview, "Perfect")
+        let messages = try await service.loadMessages(in: conv, limit: 10)
+        XCTAssertEqual(messages.map(\.text), ["Dinner at 7?", "Perfect"])
+        XCTAssertEqual(messages[0].reactions, [Reaction(kind: .like, isFromMe: true, senderHandle: nil, senderName: nil)])
+        XCTAssertEqual(messages[1].reactions, [Reaction(kind: .emoji("🎉"), isFromMe: false,
+                                                        senderHandle: "+15551230001", senderName: "Alex Demo")])
+    }
+
     func testMissingDatabase() async {
         let missing = dir.appendingPathComponent("nope/chat.db").path
         let state1 = await makeService(path: missing).checkAccess()

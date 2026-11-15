@@ -20,15 +20,43 @@ public struct Conversation: Identifiable, Hashable, Sendable {
     public var lastMessagePreview: String
     public var lastMessageDate: Date?
     public var lastMessageIsFromMe: Bool
+    /// Which of Messages' sender lists the conversation belongs to.
+    public var senderCategory: SenderCategory
 
     public init(id: Int64, guid: String, chatIdentifier: String, serviceName: String,
                 isGroup: Bool, participantHandles: [String], title: String,
-                lastMessagePreview: String, lastMessageDate: Date?, lastMessageIsFromMe: Bool) {
+                lastMessagePreview: String, lastMessageDate: Date?, lastMessageIsFromMe: Bool,
+                senderCategory: SenderCategory = .known) {
         self.id = id; self.guid = guid; self.chatIdentifier = chatIdentifier
         self.serviceName = serviceName; self.isGroup = isGroup
         self.participantHandles = participantHandles; self.title = title
         self.lastMessagePreview = lastMessagePreview; self.lastMessageDate = lastMessageDate
-        self.lastMessageIsFromMe = lastMessageIsFromMe
+        self.lastMessageIsFromMe = lastMessageIsFromMe; self.senderCategory = senderCategory
+    }
+
+    /// The key Messages uses to pin this conversation: the chat identifier (a phone number or
+    /// email for 1:1 chats, "chatNNN" for groups), lowercased. See `PinKey`.
+    public var pinKey: String { PinKey.normalize(chatIdentifier) }
+}
+
+/// Messages' sender filtering ("Filter Unknown Senders"), as recorded in chat.db.
+public enum SenderCategory: String, Hashable, Sendable, CaseIterable {
+    /// A contact, someone you've replied to, or any chat Messages didn't filter.
+    case known
+    /// Filtered by Messages as an unknown sender, and you haven't replied.
+    case unknown
+    /// Reported or detected as junk/spam (or from a blocked sender).
+    case spam
+}
+
+/// Matches Messages' pin identifiers (from the `com.apple.messages.pinning` preferences) to
+/// conversations. Messages stores a handle ("+15551234567", "name@example.com") for 1:1 chats
+/// and "SERVICE;+;CHATNNN" for groups; both reduce to the chat identifier, lowercased.
+public enum PinKey {
+    public static func normalize(_ identifier: String) -> String {
+        let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        let last = trimmed.split(separator: ";", omittingEmptySubsequences: false).last.map(String.init) ?? trimmed
+        return last.lowercased()
     }
 }
 
@@ -51,14 +79,63 @@ public struct Message: Identifiable, Hashable, Sendable {
     public var attachments: [MessageAttachment]
     /// Rich link preview stored by Messages for URL balloons (no network involved).
     public var linkPreview: LinkPreview?
+    /// Tapbacks currently on the message (at most one per person), oldest first.
+    public var reactions: [Reaction]
 
     public init(id: Int64, guid: String, text: String, isFromMe: Bool, date: Date,
                 senderHandle: String?, senderName: String?, serviceName: String, hasAttachment: Bool,
-                attachments: [MessageAttachment] = [], linkPreview: LinkPreview? = nil) {
+                attachments: [MessageAttachment] = [], linkPreview: LinkPreview? = nil, reactions: [Reaction] = []) {
         self.id = id; self.guid = guid; self.text = text; self.isFromMe = isFromMe
         self.date = date; self.senderHandle = senderHandle; self.senderName = senderName
         self.serviceName = serviceName; self.hasAttachment = hasAttachment
-        self.attachments = attachments; self.linkPreview = linkPreview
+        self.attachments = attachments; self.linkPreview = linkPreview; self.reactions = reactions
+    }
+}
+
+/// A tapback on a message.
+public struct Reaction: Hashable, Sendable {
+    public enum Kind: Hashable, Sendable {
+        case love, like, dislike, laugh, emphasize, question
+        /// Any emoji (iOS 18 / macOS 15 and later).
+        case emoji(String)
+
+        /// What the badge shows.
+        public var symbol: String {
+            switch self {
+            case .love: return "❤️"
+            case .like: return "👍"
+            case .dislike: return "👎"
+            case .laugh: return "😂"
+            case .emphasize: return "‼️"
+            case .question: return "❓"
+            case .emoji(let e): return e
+            }
+        }
+
+        /// "Loved", "Liked"… for tooltips and VoiceOver.
+        public var verb: String {
+            switch self {
+            case .love: return "Loved"
+            case .like: return "Liked"
+            case .dislike: return "Disliked"
+            case .laugh: return "Laughed at"
+            case .emphasize: return "Emphasized"
+            case .question: return "Questioned"
+            case .emoji(let e): return "Reacted \(e) to"
+            }
+        }
+    }
+
+    public var kind: Kind
+    public var isFromMe: Bool
+    /// Raw handle of whoever reacted (nil when isFromMe).
+    public var senderHandle: String?
+    /// Contact name or raw handle of whoever reacted (nil when isFromMe).
+    public var senderName: String?
+
+    public init(kind: Kind, isFromMe: Bool, senderHandle: String?, senderName: String?) {
+        self.kind = kind; self.isFromMe = isFromMe
+        self.senderHandle = senderHandle; self.senderName = senderName
     }
 }
 
@@ -161,10 +238,16 @@ public protocol MessagesService: AnyObject {
     /// `handle` is nil. Nil when there is no picture or Contacts access is missing.
     /// Has a default implementation returning nil.
     func contactImageData(forHandle handle: String?) async -> Data?
+
+    /// The conversations pinned in Messages, as pin keys (`PinKey.normalize`) in Messages' order.
+    /// Has a default implementation returning none.
+    func pinnedConversationKeys() async -> [String]
 }
 
 public extension MessagesService {
     func contactImageData(forHandle handle: String?) async -> Data? { nil }
+
+    func pinnedConversationKeys() async -> [String] { [] }
 
     func send(attachments: [URL], text: String, to conversation: Conversation) async throws {
         guard attachments.isEmpty else {

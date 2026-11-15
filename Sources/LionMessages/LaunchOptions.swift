@@ -55,6 +55,12 @@ struct LaunchOptions {
     var fetchLinkPreviews: Bool?
     /// `--toggle-buddy-pictures-after s`: flip the setting once, live (not persisted), to test it.
     var toggleBuddyPicturesAfter: Double?
+    /// `--scope known|unknown|spam`: the sender list to start on.
+    var scope: SidebarScope = .known
+    /// `--filter-unknown on|off`: overrides View ▸ Filter Unknown Senders for this launch only.
+    var filterUnknown: Bool?
+    /// `--call audio|video`: open the call sheet for the selected conversation after launch.
+    var call: PendingCall.Kind?
 
     static func parse(_ args: [String]) -> LaunchOptions {
         var o = LaunchOptions()
@@ -114,6 +120,19 @@ struct LaunchOptions {
                 switch value()?.lowercased() {
                 case "on", "true", "1", "yes": o.fetchLinkPreviews = true
                 case "off", "false", "0", "no": o.fetchLinkPreviews = false
+                default: break
+                }
+            case "--scope": o.scope = value().flatMap(SidebarScope.init(rawValue:)) ?? .known
+            case "--filter-unknown":
+                switch value()?.lowercased() {
+                case "on", "true", "1", "yes": o.filterUnknown = true
+                case "off", "false", "0", "no": o.filterUnknown = false
+                default: break
+                }
+            case "--call":
+                switch value()?.lowercased() {
+                case "audio": o.call = .audio
+                case "video": o.call = .video
                 default: break
                 }
             case "--toggle-buddy-pictures-after": o.toggleBuddyPicturesAfter = value().flatMap(Double.init)

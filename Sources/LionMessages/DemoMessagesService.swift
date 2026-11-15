@@ -53,6 +53,11 @@ final class DemoMessagesService: MessagesService {
 
     func requestContactsAccess() async -> Bool { false }
 
+    /// Pinned in "Messages": two people, the hiking group and Dad.
+    func pinnedConversationKeys() async -> [String] {
+        ["+14155550123", "iMessage;+;chat684213", "+14155550160", "+14155550167"].map(PinKey.normalize)
+    }
+
     func startWatching(onChange: @escaping () -> Void) { self.onChange = onChange }
     func stopWatching() { onChange = nil }
 
@@ -150,6 +155,8 @@ final class DemoMessagesService: MessagesService {
         var minutesAgo: Double
         var attachments: [MessageAttachment] = []
         var preview: LinkPreview?
+        /// Tapbacks: (who, nil = me) and kind.
+        var reactions: [(String?, Reaction.Kind)] = []
     }
 
     private func attachment(_ kind: MessageAttachment.Kind, _ url: URL?, name: String? = nil, mime: String? = nil,
@@ -187,12 +194,13 @@ final class DemoMessagesService: MessagesService {
             Line(from: "Maya", text: "[Attachment]", minutesAgo: todayAt(8, 12),
                  attachments: [attachment(.image, art.porchCat, mime: "image/jpeg")]),
             Line(from: "Maya", text: "Look what showed up on my porch this morning", minutesAgo: todayAt(8, 12)),
-            Line(from: nil, text: "Is that a CAT?", minutesAgo: todayAt(8, 15)),
+            Line(from: nil, text: "Is that a CAT?", minutesAgo: todayAt(8, 15), reactions: [("Maya", .laugh)]),
             Line(from: nil, text: "Are you keeping it??", minutesAgo: todayAt(8, 15)),
-            Line(from: "Maya", text: "He's very fluffy and very insistent.\nI've named him Biscuit.\nThis is not a discussion.", minutesAgo: todayAt(8, 17)),
+            Line(from: "Maya", text: "He's very fluffy and very insistent.\nI've named him Biscuit.\nThis is not a discussion.", minutesAgo: todayAt(8, 17),
+                 reactions: [(nil, .love)]),
             Line(from: nil, text: "Biscuit 😂 Of course you did", minutesAgo: todayAt(8, 18)),
             Line(from: "Maya", text: "Can you grab some cat food on your way Saturday? The salmon kind. I'll pay you back", minutesAgo: todayAt(9, 38)),
-            Line(from: nil, text: "On it 👍", minutesAgo: todayAt(9, 41)),
+            Line(from: nil, text: "On it 👍", minutesAgo: todayAt(9, 41), reactions: [("Maya", .emoji("🐟"))]),
         ]
         let filler = [
             "Did you see the game last night?", "Haha no, I fell asleep at 9", "Classic",
@@ -220,10 +228,12 @@ final class DemoMessagesService: MessagesService {
             senderHandles: ["Jonah Park": "jonah.p@example.com", "Priya Natarajan": "+14155550188",
                             "Leo Brandt": "+14155550142"], lines: [
                 Line(from: "Jonah Park", text: "Trail report: Mount Tam is muddy but gorgeous", minutesAgo: todayAt(7, 50)),
-                Line(from: "Jonah Park", text: "Sunday 7am at the trailhead?", minutesAgo: todayAt(7, 51)),
+                Line(from: "Jonah Park", text: "Sunday 7am at the trailhead?", minutesAgo: todayAt(7, 51),
+                     reactions: [("Priya Natarajan", .like), ("Leo Brandt", .like), (nil, .like)]),
                 Line(from: "Priya Natarajan", text: "I'm in. Bringing the good trail mix", minutesAgo: todayAt(8, 3)),
                 Line(from: nil, text: "Count me in! Who's driving?", minutesAgo: todayAt(8, 20)),
-                Line(from: "Leo Brandt", text: "I can take 4 in the wagon", minutesAgo: todayAt(8, 24)),
+                Line(from: "Leo Brandt", text: "I can take 4 in the wagon", minutesAgo: todayAt(8, 24),
+                     reactions: [("Jonah Park", .love), ("Priya Natarajan", .emphasize)]),
                 Line(from: "Leo Brandt", text: "Leaving from the bakery parking lot at 6:30", minutesAgo: todayAt(8, 24)),
                 Line(from: "Priya Natarajan", text: "🙌", minutesAgo: todayAt(8, 26)),
             ])
@@ -242,7 +252,7 @@ final class DemoMessagesService: MessagesService {
         add(id: 11, title: "Nora Fielding", handle: "+14155550160", lines: [
             Line(from: "Nora", text: "Made it to the cabin!", minutesAgo: todayAt(9, 2)),
             Line(from: "Nora", text: "The view from the porch this morning", minutesAgo: todayAt(9, 2),
-                 attachments: [attachment(.image, art.cabinView, mime: "image/heic")]),
+                 attachments: [attachment(.image, art.cabinView, mime: "image/heic")], reactions: [(nil, .love)]),
             Line(from: nil, text: "Wow. Jealous.", minutesAgo: todayAt(9, 4)),
             Line(from: nil, text: "[Attachment]", minutesAgo: todayAt(9, 4),
                  attachments: [attachment(.image, art.sticker, mime: "image/png", sticker: true)]),
@@ -273,7 +283,7 @@ final class DemoMessagesService: MessagesService {
             Line(from: "Dad", text: "Good. Also the garage door is making that noise again", minutesAgo: daysAgo(1, 12, 0)),
         ])
 
-        add(id: 4, title: "+1 (415) 555-0199", handle: "+14155550199", service: "SMS", lines: [
+        add(id: 4, title: "+1 (415) 555-0199", handle: "+14155550199", service: "SMS", category: .unknown, lines: [
             Line(from: "+1 (415) 555-0199", text: "Your package from Juniper Home will arrive tomorrow between 2–6 PM. Reply STOP to opt out.", minutesAgo: daysAgo(1, 15, 12)),
         ])
 
@@ -311,6 +321,20 @@ final class DemoMessagesService: MessagesService {
                 Line(from: nil, text: "Love it. See you all on the 3rd", minutesAgo: daysAgo(24, 20, 30)),
             ])
 
+        // Unknown senders and spam (Messages' filtered lists).
+        add(id: 12, title: "+1 (628) 555-0148", handle: "+16285550148", service: "SMS", category: .unknown, lines: [
+            Line(from: "+1 (628) 555-0148", text: "Hi! This is Dana from Bayside Dental confirming your cleaning on Thursday at 3:30. Reply C to confirm.", minutesAgo: todayAt(7, 5)),
+        ])
+        add(id: 13, title: "deals@example.net", handle: "deals@example.net", category: .unknown, lines: [
+            Line(from: "deals@example.net", text: "Your weekend coupon is here: 20% off everything in store.", minutesAgo: daysAgo(2, 12, 0)),
+        ])
+        add(id: 14, title: "+1 (555) 010-7788", handle: "+15550107788", service: "SMS", category: .spam, lines: [
+            Line(from: "+1 (555) 010-7788", text: "FINAL NOTICE: your toll account has an unpaid balance of $4.15. Pay now to avoid fees: example.com/pay", minutesAgo: todayAt(6, 41)),
+        ])
+        add(id: 15, title: "+1 (555) 010-2231", handle: "+15550102231", service: "SMS", category: .spam, lines: [
+            Line(from: "+1 (555) 010-2231", text: "Congratulations! You were selected for a free cruise. Reply YES to claim.", minutesAgo: daysAgo(3, 9, 12)),
+        ])
+
         add(id: 10, title: "Aunt June", handle: "+14155550104", lines: [
             Line(from: "Aunt June", text: "Merry Christmas sweetheart! ❤️", minutesAgo: daysAgo(320, 9, 0)),
             Line(from: nil, text: "Merry Christmas! Miss you!", minutesAgo: daysAgo(320, 9, 30)),
@@ -318,7 +342,7 @@ final class DemoMessagesService: MessagesService {
     }
 
     private func add(id: Int64, title: String, handle: String, service: String = "iMessage",
-                     isGroup: Bool = false, participants: [String]? = nil,
+                     category: SenderCategory = .known, isGroup: Bool = false, participants: [String]? = nil,
                      senderHandles: [String: String] = [:], lines: [Line]) {
         let now = Date()
         var list: [Message] = []
@@ -329,7 +353,11 @@ final class DemoMessagesService: MessagesService {
                 isFromMe: line.from == nil, date: now.addingTimeInterval(-line.minutesAgo * 60),
                 senderHandle: line.from.map { senderHandles[$0] ?? handle },
                 senderName: line.from, serviceName: service, hasAttachment: isAttachment,
-                attachments: line.attachments, linkPreview: line.preview))
+                attachments: line.attachments, linkPreview: line.preview,
+                reactions: line.reactions.map { who, kind in
+                    Reaction(kind: kind, isFromMe: who == nil, senderHandle: who.map { senderHandles[$0] ?? handle },
+                             senderName: who)
+                }))
             nextMessageID += 1
         }
         // Stable chronological order (several scripted lines share a minute).
@@ -340,6 +368,6 @@ final class DemoMessagesService: MessagesService {
             id: id, guid: "\(service);\(isGroup ? "+" : "-");\(handle)", chatIdentifier: handle,
             serviceName: service, isGroup: isGroup, participantHandles: participants ?? [handle],
             title: title, lastMessagePreview: last?.text ?? "", lastMessageDate: last?.date,
-            lastMessageIsFromMe: last?.isFromMe ?? false))
+            lastMessageIsFromMe: last?.isFromMe ?? false, senderCategory: category))
     }
 }

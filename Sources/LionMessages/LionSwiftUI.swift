@@ -240,20 +240,83 @@ struct SendErrorSheet: View {
                 .padding(.top, 6)
             }
         }
-        .padding(EdgeInsets(top: 18, leading: 18, bottom: 16, trailing: 18))
-        .frame(width: 460)
-        .background(
-            ZStack(alignment: .top) {
-                UnevenRoundedRectangleCompat(bottomRadius: 6)
-                    .fill(p.panelFill.swiftUI)
-                    .overlay(UnevenRoundedRectangleCompat(bottomRadius: 6).stroke(Color(nsColor: p.panelBorder), lineWidth: 1))
-                // Inner shadow cast by the toolbar onto the sheet.
-                LinearGradient(colors: [.black.opacity(p.isDark ? 0.5 : 0.2), .clear], startPoint: .top, endPoint: .bottom)
-                    .frame(height: 6)
-            }
-            .shadow(color: .black.opacity(p.isDark ? 0.6 : 0.35), radius: 12, x: 0, y: 6)
-        )
+        .modifier(LionSheetChrome())
     }
+}
+
+/// A Lion document-modal sheet's body: it hangs from the toolbar, square on top, with a soft
+/// shadow under it and the toolbar's shadow falling onto it.
+struct LionSheetChrome: ViewModifier {
+    @Environment(\.colorScheme) private var scheme
+
+    func body(content: Content) -> some View {
+        let p = LionTheme.palette(for: scheme)
+        return content
+            .padding(EdgeInsets(top: 18, leading: 18, bottom: 16, trailing: 18))
+            .frame(width: 460)
+            .background(
+                ZStack(alignment: .top) {
+                    UnevenRoundedRectangleCompat(bottomRadius: 6)
+                        .fill(p.panelFill.swiftUI)
+                        .overlay(UnevenRoundedRectangleCompat(bottomRadius: 6).stroke(Color(nsColor: p.panelBorder), lineWidth: 1))
+                    // Inner shadow cast by the toolbar onto the sheet.
+                    LinearGradient(colors: [.black.opacity(p.isDark ? 0.5 : 0.2), .clear], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 6)
+                }
+                .shadow(color: .black.opacity(p.isDark ? 0.6 : 0.35), radius: 12, x: 0, y: 6)
+            )
+    }
+}
+
+/// Confirms a FaceTime call before handing it to FaceTime, which opens its own call window.
+struct CallSheet: View {
+    let call: PendingCall
+    let picture: NSImage?
+    let onCall: () -> Void
+    let onCancel: () -> Void
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let p = LionTheme.palette(for: scheme)
+        let isVideo = call.kind == .video
+        let name = call.conversation.title
+        let handle = call.conversation.participantHandles.first ?? ""
+        HStack(alignment: .top, spacing: 16) {
+            BuddyPictureRepresentable(image: picture)
+                .frame(width: 52, height: 52)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(isVideo ? "Start a FaceTime video call with \(name)?" : "Start a FaceTime audio call with \(name)?")
+                    .font(LionFont.swiftUI(13, bold: true))
+                    .foregroundColor(Color(nsColor: p.panelHeadline))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(handle == name
+                     ? "FaceTime opens in its own window to place the call."
+                     : "FaceTime opens in its own window and calls \(handle).")
+                    .font(LionFont.swiftUI(11))
+                    .foregroundColor(Color(nsColor: p.panelBody))
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    Spacer()
+                    Button("Cancel", action: onCancel)
+                        .buttonStyle(AquaButtonStyle(kind: .secondary))
+                        .keyboardShortcut(.cancelAction)
+                    Button("Call", action: onCall)
+                        .buttonStyle(AquaButtonStyle(kind: .primary, pulses: true))
+                        .keyboardShortcut(.defaultAction)
+                }
+                .padding(.top, 6)
+            }
+        }
+        .modifier(LionSheetChrome())
+    }
+}
+
+/// The iChat buddy picture, for SwiftUI.
+struct BuddyPictureRepresentable: NSViewRepresentable {
+    let image: NSImage?
+
+    func makeNSView(context: Context) -> BuddyPictureView { BuddyPictureView() }
+    func updateNSView(_ nsView: BuddyPictureView, context: Context) { nsView.image = image }
 }
 
 /// Rectangle with only the bottom corners rounded (UnevenRoundedRectangle needs macOS 14).

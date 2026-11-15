@@ -29,6 +29,14 @@ Screenshots show the built-in demo data, not real conversations.
   built from the preview data Messages already stored
 - Link previews for links you sent that have no stored preview (View ▸ Fetch Missing Link
   Previews, on by default; see [Network access](#network-access))
+- Pinned conversations as a grid of buddy pictures at the top of the list, the same pins as
+  Messages (see [Pins](#pins)); right-click to pin or unpin, or Conversation ▸ Pin Conversation (⇧⌘P)
+- Messages' sender filtering in a Lion scope bar: Known Senders, Unknown Senders and Spam
+  (⌘1–⌘3). View ▸ Filter Unknown Senders puts known and unknown senders back in one list
+- FaceTime audio and video calls from the toolbar or the Conversation menu. A sheet asks you to
+  confirm first, then FaceTime opens its own call window (one-person conversations only)
+- Reactions (tapbacks, including emoji reactions) as a small glossy badge on the bubble's
+  corner, with counts; blue when one is yours, and a tooltip saying who reacted
 - Lion-style animations; respects Reduce Motion
 
 ## Requirements
@@ -62,6 +70,27 @@ The demo never uses the network: link previews come from a built-in stub.
 | Full Disk Access | Read `chat.db` and attachments | System Settings ▸ Privacy & Security ▸ Full Disk Access |
 | Contacts | Names and pictures instead of phone numbers | Prompted on first launch |
 | Automation (Messages) | Send messages | Prompted on first send |
+
+## Pins
+
+Lion Messages shows the conversations you pinned in Messages. It reads them from Messages'
+preferences (`~/Library/Preferences/com.apple.messages.pinning.plist`) and never writes to them.
+Pins and unpins you make in Lion Messages are kept in Lion Messages' own preferences and are
+layered on top: they don't change Messages or your other devices. Pins changed in Messages show
+up the next time Lion Messages becomes active or the database changes.
+
+## Sender lists
+
+Messages records how it filtered each conversation in `chat.db`. Lion Messages sorts them the
+same way:
+
+- **Spam:** reported as junk, detected as spam, or from a blocked sender.
+- **Unknown Senders:** filtered by Messages as an unknown sender, from nobody in your contacts,
+  and you never replied.
+- **Known Senders:** everything else.
+
+Lion Messages can't change these lists (it opens `chat.db` read-only). Use Messages to report
+junk or to move a conversation.
 
 ## Network access
 
@@ -106,11 +135,15 @@ LION_REAL_DB_SMOKE=1 swift test --filter RealDatabaseSmokeTests
 
 - The same person can appear as several conversations (SMS, RCS and iMessage chats are not merged)
 - Shows the most recent 300 messages per conversation
-- No reactions, typing indicators, or read receipts
+- Reactions are shown but can't be sent (Messages has no AppleScript for tapbacks); no typing
+  indicators or read receipts
 - Attachments that are not downloaded to this Mac show a placeholder
 - Starting a new conversation is not implemented; reply in existing ones
 - Links sent from Lion Messages reach the recipient as plain links: Messages.app only attaches
   a preview when you send from its own window. The card Lion Messages shows for them is local
+- Pins can't be reordered by dragging, and pins made here don't sync to Messages
+- Links in spam conversations are still clickable (Messages disables them)
+- FaceTime calls with groups aren't supported (FaceTime has no URL for them)
 - Drags that only offer a file promise (some apps, such as Photos or Mail) can't be attached;
   drag from Finder, or export the item first
 

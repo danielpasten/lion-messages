@@ -24,6 +24,60 @@ struct TranscriptState: Equatable {
     static let empty = TranscriptState(conversationID: nil, isGroup: false, messages: [], reason: .opened)
 }
 
+/// Which of Messages' sender lists the sidebar shows (the scope bar above the list).
+enum SidebarScope: String, CaseIterable, Hashable {
+    /// Known senders, or every non-spam conversation when unknown senders aren't filtered.
+    case known
+    case unknown
+    case spam
+
+    func includes(_ category: SenderCategory, filteringUnknown: Bool) -> Bool {
+        switch self {
+        case .known: return category == .known || (!filteringUnknown && category == .unknown)
+        case .unknown: return filteringUnknown && category == .unknown
+        case .spam: return category == .spam
+        }
+    }
+
+    /// Scope bar label.
+    func label(filteringUnknown: Bool) -> String {
+        switch self {
+        case .known: return filteringUnknown ? "Known Senders" : "All Messages"
+        case .unknown: return "Unknown Senders"
+        case .spam: return "Spam"
+        }
+    }
+
+    /// Source-list header above the rows.
+    func header(filteringUnknown: Bool) -> String {
+        switch self {
+        case .known: return filteringUnknown ? "KNOWN SENDERS" : "CONVERSATIONS"
+        case .unknown: return "UNKNOWN SENDERS"
+        case .spam: return "SPAM"
+        }
+    }
+
+    static func scopes(filteringUnknown: Bool) -> [SidebarScope] {
+        filteringUnknown ? [.known, .unknown, .spam] : [.known, .spam]
+    }
+}
+
+/// A FaceTime call waiting for the user to confirm it in a sheet.
+struct PendingCall: Identifiable, Equatable {
+    enum Kind: Equatable { case audio, video }
+
+    let id = UUID()
+    let kind: Kind
+    let conversation: Conversation
+
+    /// The URL that hands the call to FaceTime (it opens its own call window).
+    var url: URL? {
+        guard let handle = conversation.participantHandles.first,
+              let encoded = handle.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) else { return nil }
+        return URL(string: (kind == .video ? "facetime://" : "facetime-audio://") + encoded)
+    }
+}
+
 /// A send failure waiting to be shown in a sheet.
 struct PresentedError: Identifiable, Equatable {
     let id = UUID()
@@ -50,6 +104,17 @@ final class AppStore: ObservableObject {
     /// Files are being dragged over the conversation area.
     @Published private(set) var isDropTargeted = false
     @Published var presentedError: PresentedError?
+    /// A call waiting to be confirmed (the call sheet is up).
+    @Published private(set) var pendingCall: PendingCall?
+    /// The sender list the sidebar shows.
+    @Published private(set) var scope: SidebarScope = .known
+    /// View ▸ Filter Unknown Senders (persisted): unknown senders get their own list.
+    @Published private(set) var filtersUnknownSenders: Bool
+    /// Pinned conversations, in pin order, for the grid at the top of the sidebar. Empty while
+    /// searching and outside the main list (they're listed as rows then).
+    @Published private(set) var pinnedConversations: [Conversation] = []
+    /// Conversations in each sender list (for the scope bar).
+    @Published private(set) var scopeCounts: [SidebarScope: Int] = [:]
     /// View ▸ Show Buddy Pictures (persisted; `--buddy-pictures` overrides it for one launch).
     @Published private(set) var showBuddyPictures: Bool
     /// Fires when a buddy picture finished loading (pictures never change any row's size).
@@ -75,6 +140,12 @@ final class AppStore: ObservableObject {
     private var refreshInFlight = false
     private var refreshPending = false
     private var messageLoadGeneration = 0
+    /// Pins from Messages, plus the pins and unpins made here.
+    private var messagesPinKeys: [String] = []
+    private let pinOverrides: PinOverrides
+    /// False in the demo: the call sheet works, but nothing is handed to FaceTime.
+    private let placesCalls: Bool
+    static let filterUnknownDefaultsKey = "FilterUnknownSenders"
 
     static let buddyPicturesDefaultsKey = "ShowBuddyPictures"
     /// Contact pictures by key ("me" or a handle), downsampled for 32 pt.
@@ -83,15 +154,22 @@ final class AppStore: ObservableObject {
     private var buddyPictureRequests: [String: String?] = [:]
     private var buddyPictureFetching: Set<String> = []
 
-    init(service: MessagesService, linkPreviews: LinkPreviewService, forcePermissionScreen: Bool = false,
-         initialSelectionIndex: Int = 0, buddyPicturesOverride: Bool? = nil) {
+    init(service: MessagesService, linkPreviews: LinkPreviewService, pinOverrides: PinOverrides,
+         placesCalls: Bool = true, forcePermissionScreen: Bool = false,
+         initialSelectionIndex: Int = 0, buddyPicturesOverride: Bool? = nil,
+         filterUnknownOverride: Bool? = nil, initialScope: SidebarScope = .known) {
         self.service = service
         self.linkPreviews = linkPreviews
+        self.pinOverrides = pinOverrides
+        self.placesCalls = placesCalls
         self.forcePermissionScreen = forcePermissionScreen
         self.initialSelectionIndex = initialSelectionIndex
         let defaults = UserDefaults.standard
-        defaults.register(defaults: [Self.buddyPicturesDefaultsKey: true])
+        defaults.register(defaults: [Self.buddyPicturesDefaultsKey: true, Self.filterUnknownDefaultsKey: true])
         showBuddyPictures = buddyPicturesOverride ?? defaults.bool(forKey: Self.buddyPicturesDefaultsKey)
+        let filtering = filterUnknownOverride ?? defaults.bool(forKey: Self.filterUnknownDefaultsKey)
+        filtersUnknownSenders = filtering
+        scope = SidebarScope.scopes(filteringUnknown: filtering).contains(initialScope) ? initialScope : .known
         linkPreviews.didUpdate
             .sink { [weak self] in self?.applyFetchedPreviews() }
             .store(in: &cancellables)
@@ -201,7 +279,7 @@ final class AppStore: ObservableObject {
 
     /// Files can be added while a conversation is open and no sheet is up.
     var canAcceptAttachments: Bool {
-        accessState == .granted && selectedConversation != nil && presentedError == nil
+        accessState == .granted && selectedConversation != nil && presentedError == nil && pendingCall == nil
     }
 
     /// Adds files as pending attachments (duplicates and folders are skipped). Returns whether
@@ -245,8 +323,13 @@ final class AppStore: ObservableObject {
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.accessState != .granted, !self.forcePermissionScreen else { return }
-                await self.checkAccess()
+                guard let self, !self.forcePermissionScreen else { return }
+                if self.accessState == .granted {
+                    // Pins may have changed in Messages (they don't touch chat.db).
+                    await self.reloadPins()
+                } else {
+                    await self.checkAccess()
+                }
             }
         }
         if forcePermissionScreen {
@@ -292,9 +375,10 @@ final class AppStore: ObservableObject {
         guard !didBootstrap else { return }
         didBootstrap = true
         await reloadConversations()
-        if selectedConversationID == nil, !conversations.isEmpty {
-            let index = min(max(initialSelectionIndex, 0), conversations.count - 1)
-            select(conversations[index].id)
+        let visible = visibleConversations
+        if selectedConversationID == nil, !visible.isEmpty {
+            let index = min(max(initialSelectionIndex, 0), visible.count - 1)
+            select(visible[index].id)
         }
         service.startWatching { [weak self] in
             Task { @MainActor in self?.databaseDidChange() }
@@ -310,6 +394,7 @@ final class AppStore: ObservableObject {
     private func reloadConversations() async {
         do {
             let list = try await service.loadConversations()
+            messagesPinKeys = await service.pinnedConversationKeys()
             conversations = list
             applyFilter()
             if let id = selectedConversationID, !list.contains(where: { $0.id == id }) {
@@ -366,17 +451,124 @@ final class AppStore: ObservableObject {
     /// Toolbar refresh button / Cmd-R.
     func refresh() { databaseDidChange() }
 
+    private func reloadPins() async {
+        let keys = await service.pinnedConversationKeys()
+        guard keys != messagesPinKeys else { return }
+        messagesPinKeys = keys
+        applyFilter()
+    }
+
+    /// Splits the conversations into the pinned grid and the rows of the current sender list.
     private func applyFilter() {
-        let query = searchText.trimmingCharacters(in: .whitespaces)
-        if query.isEmpty {
-            filteredConversations = conversations
-        } else {
-            filteredConversations = conversations.filter { c in
-                c.title.localizedCaseInsensitiveContains(query)
-                    || c.lastMessagePreview.localizedCaseInsensitiveContains(query)
-                    || c.participantHandles.contains { $0.localizedCaseInsensitiveContains(query) }
+        let filtering = filtersUnknownSenders
+        var counts: [SidebarScope: Int] = [:]
+        for c in conversations {
+            for s in SidebarScope.allCases where s.includes(c.senderCategory, filteringUnknown: filtering) {
+                counts[s, default: 0] += 1
             }
         }
+        if counts != scopeCounts { scopeCounts = counts }
+
+        // Pinned conversations (never spam) show as a grid on the main list, and leave the rows.
+        var pinned: [Conversation] = []
+        var pinnedIDs = Set<Int64>()
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        if scope == .known, query.isEmpty {
+            let candidates = conversations.filter { $0.senderCategory != .spam }
+            for key in pinnedKeys {
+                // The newest chat with that identifier (conversations are newest first).
+                if let c = candidates.first(where: { $0.pinKey == key }), pinnedIDs.insert(c.id).inserted {
+                    pinned.append(c)
+                }
+            }
+        }
+        if pinned != pinnedConversations { pinnedConversations = pinned }
+
+        filteredConversations = conversations.filter { c in
+            guard !pinnedIDs.contains(c.id) else { return false }
+            if query.isEmpty {
+                // Pinned unknown senders show with the pins, not in the unknown list.
+                if scope == .unknown, pinnedKeys.contains(c.pinKey) { return false }
+                return scope.includes(c.senderCategory, filteringUnknown: filtering)
+            }
+            return scope.includes(c.senderCategory, filteringUnknown: filtering)
+                && (c.title.localizedCaseInsensitiveContains(query)
+                    || c.lastMessagePreview.localizedCaseInsensitiveContains(query)
+                    || c.participantHandles.contains { $0.localizedCaseInsensitiveContains(query) })
+        }
+    }
+
+    /// Everything in the sidebar, top to bottom: pins (row by row), then the list.
+    var visibleConversations: [Conversation] { pinnedConversations + filteredConversations }
+
+    // MARK: Sender lists
+
+    func setScope(_ newScope: SidebarScope) {
+        guard newScope != scope, SidebarScope.scopes(filteringUnknown: filtersUnknownSenders).contains(newScope) else { return }
+        scope = newScope
+        applyFilter()
+        selectFirstIfHidden()
+    }
+
+    func setFiltersUnknownSenders(_ on: Bool, persist: Bool = true) {
+        if persist { UserDefaults.standard.set(on, forKey: Self.filterUnknownDefaultsKey) }
+        guard on != filtersUnknownSenders else { return }
+        filtersUnknownSenders = on
+        if !SidebarScope.scopes(filteringUnknown: on).contains(scope) { scope = .known }
+        applyFilter()
+        selectFirstIfHidden()
+    }
+
+    /// After switching lists: open the first conversation if the open one isn't in this list.
+    private func selectFirstIfHidden() {
+        let visible = visibleConversations
+        guard !visible.contains(where: { $0.id == selectedConversationID }) else { return }
+        select(visible.first?.id)
+    }
+
+    // MARK: Pins
+
+    /// Messages' pins minus those unpinned here, then those pinned here.
+    private var pinnedKeys: [String] { pinOverrides.effective(messagesKeys: messagesPinKeys) }
+
+    func isPinned(_ conversation: Conversation) -> Bool { pinnedKeys.contains(conversation.pinKey) }
+
+    func setPinned(_ pinned: Bool, _ conversation: Conversation) {
+        guard conversation.senderCategory != .spam || !pinned else { return }
+        if pinned {
+            pinOverrides.pin(conversation.pinKey, messagesKeys: messagesPinKeys)
+        } else {
+            pinOverrides.unpin(conversation.pinKey, messagesKeys: messagesPinKeys)
+        }
+        objectWillChange.send()
+        applyFilter()
+    }
+
+    // MARK: Calls
+
+    /// FaceTime can be started with the open conversation (one person; groups aren't supported).
+    var canCall: Bool {
+        guard let c = selectedConversation, !c.isGroup, c.participantHandles.first != nil else { return false }
+        return accessState == .granted && presentedError == nil && pendingCall == nil
+    }
+
+    /// The call buttons and Conversation menu: confirm in a sheet first, so a stray click
+    /// never rings anyone.
+    func requestCall(_ kind: PendingCall.Kind) {
+        guard canCall, let conversation = selectedConversation else { return }
+        pendingCall = PendingCall(kind: kind, conversation: conversation)
+    }
+
+    func confirmCall() {
+        guard let call = pendingCall else { return }
+        pendingCall = nil
+        if placesCalls, let url = call.url { NSWorkspace.shared.open(url) }
+        focusComposer.send()
+    }
+
+    func cancelCall() {
+        pendingCall = nil
+        focusComposer.send()
     }
 
     // MARK: Selection

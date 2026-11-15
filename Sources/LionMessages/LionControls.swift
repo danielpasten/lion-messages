@@ -85,7 +85,7 @@ final class LionScrollView: NSScrollView {
 // MARK: - Glyphs (Lion used small monochrome glyphs, not SF Symbols)
 
 enum LionGlyph {
-    case refresh, compose, paperclip
+    case refresh, compose, paperclip, phone, video
 
     /// Stroked outline, plus an optional filled part (arrow heads).
     func paths(in r: NSRect) -> (stroke: NSBezierPath, fill: NSBezierPath?) {
@@ -126,6 +126,39 @@ enum LionGlyph {
             pencil.line(to: NSPoint(x: r.midX - 0.5, y: r.midY + 5))
             pencil.close()
             p.append(pencil)
+        case .phone:
+            // An old-fashioned handset, earpiece up-left, mouthpiece down-right.
+            let handset = NSBezierPath()
+            handset.move(to: NSPoint(x: r.minX + 1.5, y: r.minY + 3.2))
+            handset.curve(to: NSPoint(x: r.maxX - 3.2, y: r.maxY - 1.5),
+                          controlPoint1: NSPoint(x: r.minX + 1.2, y: r.midY + 3),
+                          controlPoint2: NSPoint(x: r.midX - 3, y: r.maxY - 1.2))
+            handset.line(to: NSPoint(x: r.maxX - 0.8, y: r.maxY - 3.6))
+            handset.line(to: NSPoint(x: r.maxX - 3.6, y: r.maxY - 6.6))
+            handset.line(to: NSPoint(x: r.maxX - 5.8, y: r.maxY - 5.2))
+            handset.curve(to: NSPoint(x: r.minX + 5.2, y: r.minY + 5.8),
+                          controlPoint1: NSPoint(x: r.midX - 1, y: r.midY + 2.5),
+                          controlPoint2: NSPoint(x: r.midX - 2.5, y: r.midY + 1))
+            handset.line(to: NSPoint(x: r.minX + 6.6, y: r.minY + 3.6))
+            handset.line(to: NSPoint(x: r.minX + 3.6, y: r.minY + 0.8))
+            handset.close()
+            handset.lineWidth = 1.4
+            p.append(handset)
+            p.lineWidth = 1.4
+        case .video:
+            // A camera body with its lens hood to the right.
+            let body = NSBezierPath(roundedRect: NSRect(x: r.minX + 0.5, y: r.midY - 4, width: r.width - 6, height: 8),
+                                    xRadius: 1.8, yRadius: 1.8)
+            body.lineWidth = 1.5
+            p.append(body)
+            let hood = NSBezierPath()
+            hood.move(to: NSPoint(x: r.maxX - 5.5, y: r.midY - 1.2))
+            hood.line(to: NSPoint(x: r.maxX - 0.5, y: r.midY - 3.6))
+            hood.line(to: NSPoint(x: r.maxX - 0.5, y: r.midY + 3.6))
+            hood.line(to: NSPoint(x: r.maxX - 5.5, y: r.midY + 1.2))
+            hood.close()
+            p.append(hood)
+            p.lineWidth = 1.5
         case .paperclip:
             // A classic two-loop paperclip, drawn upright around the origin, then tilted 45°.
             let clip = NSBezierPath()

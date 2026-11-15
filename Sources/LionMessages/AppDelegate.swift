@@ -59,8 +59,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                                               cache: LinkPreviewCache(directory: LinkPreviewCache.defaultDirectory),
                                               enabled: fetchPreviews)
         }
-        store = AppStore(service: service, linkPreviews: linkPreviews, forcePermissionScreen: options.forcePermissionScreen,
-                         initialSelectionIndex: options.selectIndex, buddyPicturesOverride: options.buddyPictures)
+        // The demo's pins live in memory, so it never changes the real ones.
+        store = AppStore(service: service, linkPreviews: linkPreviews,
+                         pinOverrides: PinOverrides(defaults: options.demo ? nil : .standard),
+                         placesCalls: !options.demo, forcePermissionScreen: options.forcePermissionScreen,
+                         initialSelectionIndex: options.selectIndex, buddyPicturesOverride: options.buddyPictures,
+                         filterUnknownOverride: options.filterUnknown, initialScope: options.scope)
         if let draft = options.draft { store.draft = draft }
         if let search = options.search { store.searchText = search }
 
@@ -89,6 +93,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                         self.store.sendDraft()
                     }
                 }
+            }
+        }
+        if let kind = options.call {
+            after(0.6) { [weak self] in
+                self?.beginSequence("call")
+                self?.store.requestCall(kind)
             }
         }
         if options.showDropHighlight {
@@ -284,12 +294,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         store.setShowBuddyPictures(!store.showBuddyPictures)
     }
 
+    @objc private func toggleFilterUnknown(_ sender: Any?) {
+        store.setFiltersUnknownSenders(!store.filtersUnknownSenders)
+    }
+
+    @objc private func showScope(_ sender: NSMenuItem) {
+        guard let scope = sender.representedObject as? String, let s = SidebarScope(rawValue: scope) else { return }
+        store.setScope(s)
+    }
+
+    @objc private func togglePinned(_ sender: Any?) {
+        guard let c = store.selectedConversation else { return }
+        store.setPinned(!store.isPinned(c), c)
+    }
+
+    @objc private func startAudioCall(_ sender: Any?) { store.requestCall(.audio) }
+    @objc private func startVideoCall(_ sender: Any?) { store.requestCall(.video) }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleBuddyPictures(_:)) {
             menuItem.state = store?.showBuddyPictures == true ? .on : .off
         }
         if menuItem.action == #selector(toggleFetchLinkPreviews(_:)) {
             menuItem.state = store?.fetchesLinkPreviews == true ? .on : .off
+        }
+        if menuItem.action == #selector(toggleFilterUnknown(_:)) {
+            menuItem.state = store?.filtersUnknownSenders == true ? .on : .off
+        }
+        if menuItem.action == #selector(showScope(_:)), let store {
+            let scope = (menuItem.representedObject as? String).flatMap(SidebarScope.init(rawValue:))
+            menuItem.state = scope == store.scope ? .on : .off
+            if scope == .known { menuItem.title = scope!.label(filteringUnknown: store.filtersUnknownSenders) }
+            return scope.map { SidebarScope.scopes(filteringUnknown: store.filtersUnknownSenders).contains($0) } ?? false
+                && store.accessState == .granted
+        }
+        if menuItem.action == #selector(togglePinned(_:)) {
+            guard let store, let c = store.selectedConversation else {
+                menuItem.title = "Pin Conversation"
+                return false
+            }
+            let pinned = store.isPinned(c)
+            menuItem.title = pinned ? "Unpin Conversation" : "Pin Conversation"
+            return pinned || c.senderCategory != .spam
+        }
+        if menuItem.action == #selector(startAudioCall(_:)) || menuItem.action == #selector(startVideoCall(_:)) {
+            return store?.canCall == true
         }
         if menuItem.action == #selector(attachFiles(_:)) {
             return store?.canAcceptAttachments == true && window.attachedSheet == nil
@@ -439,6 +488,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                                    keyEquivalent: "b")
         buddies.keyEquivalentModifierMask = [.command, .shift]
         buddies.target = self
+        let filterUnknown = view.addItem(withTitle: "Filter Unknown Senders", action: #selector(toggleFilterUnknown(_:)),
+                                         keyEquivalent: "")
+        filterUnknown.target = self
+        filterUnknown.toolTip = "List messages from people who aren’t in your contacts, and whom you haven’t replied to, separately."
         let previews = view.addItem(withTitle: "Fetch Missing Link Previews", action: #selector(toggleFetchLinkPreviews(_:)),
                                     keyEquivalent: "")
         previews.target = self
@@ -447,6 +500,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         view.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
             .keyEquivalentModifierMask = [.command, .control]
         main.addItem(withTitle: "View", action: nil, keyEquivalent: "").submenu = view
+
+        let conversation = NSMenu(title: "Conversation")
+        let pin = conversation.addItem(withTitle: "Pin Conversation", action: #selector(togglePinned(_:)), keyEquivalent: "p")
+        pin.keyEquivalentModifierMask = [.command, .shift]
+        pin.target = self
+        conversation.addItem(.separator())
+        let audio = conversation.addItem(withTitle: "FaceTime Audio", action: #selector(startAudioCall(_:)), keyEquivalent: "")
+        audio.target = self
+        let video = conversation.addItem(withTitle: "FaceTime Video", action: #selector(startVideoCall(_:)), keyEquivalent: "")
+        video.target = self
+        conversation.addItem(.separator())
+        for (n, scope) in SidebarScope.allCases.enumerated() {
+            let item = conversation.addItem(withTitle: scope.label(filteringUnknown: true), action: #selector(showScope(_:)),
+                                            keyEquivalent: "\(n + 1)")
+            item.representedObject = scope.rawValue
+            item.target = self
+        }
+        main.addItem(withTitle: "Conversation", action: nil, keyEquivalent: "").submenu = conversation
 
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")

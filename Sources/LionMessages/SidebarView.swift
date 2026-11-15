@@ -3,9 +3,24 @@ import Combine
 import MessagesModel
 import SwiftUI
 
-/// Mail-on-Lion style conversation list: an NSTableView with hand-drawn rows.
+/// One row of the sidebar table.
+enum SidebarItem: Equatable {
+    /// The grid of pinned conversations (only on the main list, when not searching).
+    case pins
+    /// The source-list header naming the sender list.
+    case header
+    case conversation(Conversation)
+
+    var conversation: Conversation? {
+        if case .conversation(let c) = self { return c }
+        return nil
+    }
+}
+
+/// Mail-on-Lion style conversation list: an NSTableView with hand-drawn rows, topped by
+/// Messages-style pinned conversations.
 @MainActor
-final class SidebarController: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+final class SidebarController: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     static let width: CGFloat = 260
     static let headerHeight: CGFloat = 28
     static let rowHeight: CGFloat = 52
@@ -13,13 +28,17 @@ final class SidebarController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     let scrollView = LionScrollView()
     let tableView = SidebarTableView()
     private weak var store: AppStore?
-    private var conversations: [Conversation] = []
+    private var items: [SidebarItem] = []
+    private var pinned: [Conversation] = []
+    private var headerTitle = ""
     private var selectedID: Int64?
     private var isSyncingSelection = false
     private var cancellables: Set<AnyCancellable> = []
     private let activeFader = LionActiveFader()
     private var lastSearchText = ""
+    private var lastScope: SidebarScope?
     private var rowsAnimation: (overlay: SidebarRowsOverlay, tween: LionTween)?
+    private weak var pinsView: SidebarPinsView?
 
     init(store: AppStore) {
         self.store = store
@@ -39,14 +58,22 @@ final class SidebarController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         tableView.delegate = self
         tableView.onAppearanceChange = { [weak self] in self?.applyAppearance() }
         tableView.onWindowChange = { [weak self] window in self?.activeFader.attach(to: window) }
+        let menu = NSMenu()
+        menu.delegate = self
+        tableView.menu = menu
         activeFader.onChange = { [weak self] in self?.applyActiveFraction() }
         scrollView.documentView = tableView
         scrollView.drawsBackground = true
         applyAppearance()
 
+        // The store sets the pins and the scope before the rows, so the rows' change carries all three.
         store.$filteredConversations
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] list in self?.update(conversations: list) }
+            .sink { [weak self, weak store] list in
+                guard let self, let store else { return }
+                self.update(rows: list, pinned: store.pinnedConversations,
+                            header: store.scope.header(filteringUnknown: store.filtersUnknownSenders))
+            }
             .store(in: &cancellables)
         store.$selectedConversationID
             .receive(on: DispatchQueue.main)
@@ -72,6 +99,15 @@ final class SidebarController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         cell.picture = show && !c.isGroup ? store?.buddyPicture(isFromMe: false, handle: c.participantHandles.first) : nil
     }
 
+    private func configurePins(_ view: SidebarPinsView) {
+        view.conversations = pinned
+        view.pictures = pinned.map { c in
+            c.isGroup ? nil : store?.buddyPicture(isFromMe: false, handle: c.participantHandles.first)
+        }
+        view.selectedID = selectedID
+        view.activeFraction = activeFader.value
+    }
+
     /// The text inset changes; row heights don't. No motion.
     private func buddyPicturesChanged() {
         endRowsAnimation()
@@ -83,8 +119,12 @@ final class SidebarController: NSObject, NSTableViewDataSource, NSTableViewDeleg
 
     private func refreshVisiblePictures() {
         tableView.enumerateAvailableRowViews { rowView, row in
-            guard row > 0, row - 1 < conversations.count, let cell = rowView.view(atColumn: 0) as? SidebarCell else { return }
-            configurePicture(cell, conversations[row - 1])
+            guard row < items.count else { return }
+            if let cell = rowView.view(atColumn: 0) as? SidebarCell, let c = items[row].conversation {
+                configurePicture(cell, c)
+            } else if let pins = rowView.view(atColumn: 0) as? SidebarPinsView {
+                configurePins(pins)
+            }
         }
     }
 
@@ -100,24 +140,32 @@ final class SidebarController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         tableView.enumerateAvailableRowViews { rowView, _ in
             (rowView as? SidebarRowView)?.activeFraction = value
         }
+        pinsView?.activeFraction = value
     }
 
-    private func update(conversations list: [Conversation]) {
-        guard list != conversations else { return }
-        let isFirstLoad = conversations.isEmpty
+    private func update(rows list: [Conversation], pinned newPinned: [Conversation], header: String) {
+        var newItems: [SidebarItem] = newPinned.isEmpty ? [] : [.pins]
+        newItems.append(.header)
+        newItems += list.map(SidebarItem.conversation)
+        guard newItems != items || newPinned != pinned || header != headerTitle else { return }
+        let isFirstLoad = items.isEmpty
         let searchText = store?.searchText ?? ""
-        let isFilter = searchText != lastSearchText
+        let scope = store?.scope
+        let isFilter = searchText != lastSearchText || scope != lastScope
         lastSearchText = searchText
+        lastScope = scope
         endRowsAnimation()
         let before = isFirstLoad ? [:] : snapshotVisibleRows()
-        conversations = list
+        items = newItems
+        pinned = newPinned
+        headerTitle = header
         isSyncingSelection = true
         tableView.reloadData()
         syncSelection(scroll: false)
         isSyncingSelection = false
         if !before.isEmpty { animateRows(from: before, isFilter: isFilter) }
         // Start with keyboard focus in the list so the arrow keys work right away.
-        if isFirstLoad, !list.isEmpty, let window = tableView.window,
+        if isFirstLoad, !list.isEmpty || !newPinned.isEmpty, let window = tableView.window,
            window.firstResponder === window || window.firstResponder == nil {
             window.makeFirstResponder(tableView)
         }
@@ -126,6 +174,15 @@ final class SidebarController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     // MARK: Row motion (reorder, new rows, filtering, updated text)
 
     private static let headerKey = Int64.min
+    private static let pinsKey = Int64.min + 1
+
+    private func key(_ item: SidebarItem) -> Int64 {
+        switch item {
+        case .pins: return Self.pinsKey
+        case .header: return Self.headerKey
+        case .conversation(let c): return c.id
+        }
+    }
 
     /// Pictures of the rows on screen, keyed by conversation ID.
     private func snapshotVisibleRows() -> [Int64: SidebarRowsOverlay.Snap] {
@@ -134,10 +191,9 @@ final class SidebarController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         let visible = tableView.visibleRect
         var out: [Int64: SidebarRowsOverlay.Snap] = [:]
         tableView.enumerateAvailableRowViews { rowView, row in
-            guard rowView.frame.intersects(visible), row <= conversations.count,
+            guard rowView.frame.intersects(visible), row < items.count,
                   let image = rowView.lionSnapshot() else { return }
-            let key = row == 0 ? Self.headerKey : conversations[row - 1].id
-            out[key] = .init(image: image, frame: rowView.frame)
+            out[key(items[row])] = .init(image: image, frame: rowView.frame)
         }
         return out
     }
@@ -178,32 +234,37 @@ final class SidebarController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         selectedID = id
         // Selection is instant, as in Lion's source lists.
         endRowsAnimation()
+        pinsView?.selectedID = id
         isSyncingSelection = true
         syncSelection(scroll: true)
         isSyncingSelection = false
     }
 
     private func syncSelection(scroll: Bool) {
-        if let id = selectedID, let index = conversations.firstIndex(where: { $0.id == id }) {
-            let row = index + 1
+        if let id = selectedID, let row = items.firstIndex(where: { $0.conversation?.id == id }) {
             if tableView.selectedRow != row {
                 tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
             }
             if scroll { tableView.scrollRowToVisible(row) }
         } else {
             tableView.deselectAll(nil)
+            if scroll, let id = selectedID, pinned.contains(where: { $0.id == id }) { tableView.scrollRowToVisible(0) }
         }
     }
 
     // MARK: Data source / delegate
 
-    func numberOfRows(in tableView: NSTableView) -> Int { conversations.count + 1 }
+    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        row == 0 ? Self.headerHeight : Self.rowHeight
+        switch items[row] {
+        case .pins: return SidebarPinsView.height(count: pinned.count)
+        case .header: return Self.headerHeight
+        case .conversation: return Self.rowHeight
+        }
     }
 
-    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { row > 0 }
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { items[row].conversation != nil }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
         let id = NSUserInterfaceItemIdentifier("SidebarRow")
@@ -214,28 +275,76 @@ final class SidebarController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        if row == 0 {
+        switch items[row] {
+        case .pins:
+            let id = NSUserInterfaceItemIdentifier("SidebarPins")
+            let view = tableView.makeView(withIdentifier: id, owner: nil) as? SidebarPinsView ?? SidebarPinsView()
+            view.identifier = id
+            view.onSelect = { [weak self] c in self?.selectFromPins(c) }
+            view.onUnpin = { [weak self] c in self?.store?.setPinned(false, c) }
+            configurePins(view)
+            pinsView = view
+            return view
+        case .header:
             let id = NSUserInterfaceItemIdentifier("SidebarHeader")
             let view = tableView.makeView(withIdentifier: id, owner: nil) as? SidebarHeaderCell ?? SidebarHeaderCell()
             view.identifier = id
+            view.title = headerTitle
             return view
+        case .conversation(let c):
+            let id = NSUserInterfaceItemIdentifier("SidebarCell")
+            let cell = tableView.makeView(withIdentifier: id, owner: nil) as? SidebarCell ?? SidebarCell()
+            cell.identifier = id
+            configurePicture(cell, c)
+            cell.conversation = c
+            return cell
         }
-        let id = NSUserInterfaceItemIdentifier("SidebarCell")
-        let cell = tableView.makeView(withIdentifier: id, owner: nil) as? SidebarCell ?? SidebarCell()
-        cell.identifier = id
-        configurePicture(cell, conversations[row - 1])
-        cell.conversation = conversations[row - 1]
-        return cell
+    }
+
+    private func selectFromPins(_ c: Conversation) {
+        endRowsAnimation()
+        // Keep the keyboard in the list, like clicking a row does.
+        if let window = tableView.window, window.firstResponder !== tableView { window.makeFirstResponder(tableView) }
+        selectedID = c.id
+        pinsView?.selectedID = c.id
+        isSyncingSelection = true
+        tableView.deselectAll(nil)
+        isSyncingSelection = false
+        store?.select(c.id)
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !isSyncingSelection else { return }
         endRowsAnimation()
         let row = tableView.selectedRow
-        guard row > 0, row - 1 < conversations.count else { return }
-        let id = conversations[row - 1].id
-        selectedID = id
-        store?.select(id)
+        guard row >= 0, row < items.count, let c = items[row].conversation else { return }
+        selectedID = c.id
+        pinsView?.selectedID = c.id
+        store?.select(c.id)
+    }
+
+    // MARK: Context menu (Pin / Unpin)
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let row = tableView.clickedRow
+        guard row >= 0, row < items.count, let c = items[row].conversation, let store else { return }
+        addPinItem(to: menu, for: c, store: store)
+    }
+
+    fileprivate func addPinItem(to menu: NSMenu, for c: Conversation, store: AppStore) {
+        let pinnedNow = store.isPinned(c)
+        guard pinnedNow || c.senderCategory != .spam else { return }
+        let item = NSMenuItem(title: pinnedNow ? "Unpin" : "Pin", action: #selector(togglePin(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = c.id
+        menu.addItem(item)
+    }
+
+    @objc private func togglePin(_ sender: NSMenuItem) {
+        guard let store, let id = sender.representedObject as? Int64,
+              let c = store.conversations.first(where: { $0.id == id }) else { return }
+        store.setPinned(!store.isPinned(c), c)
     }
 }
 
@@ -260,9 +369,9 @@ final class SidebarRowView: NSTableRowView {
         didSet { if isSelected != oldValue { subviews.forEach { $0.needsDisplay = true } } }
     }
 
-    /// Mail-style hairline between rows (not under the header, not when selected).
+    /// Mail-style hairline between rows (not under the header or the pins, not when selected).
     override func drawBackground(in dirtyRect: NSRect) {
-        guard !isSelected, !(subviews.first is SidebarHeaderCell) else { return }
+        guard !isSelected, !(subviews.first is SidebarHeaderCell), !(subviews.first is SidebarPinsView) else { return }
         LionTheme.palette(for: effectiveAppearance).sidebarSeparator.setFill()
         NSRect(x: 0, y: isFlipped ? bounds.maxY - 1 : 0, width: bounds.width, height: 1).fill()
     }
@@ -382,13 +491,15 @@ final class SidebarRowsOverlay: NSView {
     }
 }
 
-/// "CONVERSATIONS" — the small, bold, uppercase source-list header.
+/// "KNOWN SENDERS", "SPAM"… — the small, bold, uppercase source-list header.
 final class SidebarHeaderCell: NSView {
+    var title = "CONVERSATIONS" { didSet { if title != oldValue { needsDisplay = true } } }
+
     override var isFlipped: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
         let p = LionTheme.palette(for: effectiveAppearance)
-        let str = NSAttributedString(string: "CONVERSATIONS", attributes: [
+        let str = NSAttributedString(string: title, attributes: [
             .font: LionFont.bold(11),
             .foregroundColor: p.sidebarHeader,
             .shadow: p.sidebarShadow.nsShadow,

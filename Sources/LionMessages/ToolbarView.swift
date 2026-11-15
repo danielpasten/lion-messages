@@ -15,14 +15,29 @@ final class LionToolbarView: LionView {
     let searchField = LionSearchField()
     private let refreshButton: LionTexturedButton
     private let composeButton: LionTexturedButton
+    let audioCallButton: LionTexturedButton
+    let videoCallButton: LionTexturedButton
 
-    init(onRefresh: @escaping () -> Void, onCompose: @escaping () -> Void) {
+    init(onRefresh: @escaping () -> Void, onCompose: @escaping () -> Void,
+         onAudioCall: @escaping () -> Void, onVideoCall: @escaping () -> Void) {
         refreshButton = LionTexturedButton(glyph: .refresh, toolTip: "Refresh", action: onRefresh)
         composeButton = LionTexturedButton(glyph: .compose, toolTip: "Write a Message", action: onCompose)
+        audioCallButton = LionTexturedButton(glyph: .phone, toolTip: "FaceTime Audio", action: onAudioCall)
+        videoCallButton = LionTexturedButton(glyph: .video, toolTip: "FaceTime Video", action: onVideoCall)
         super.init(frame: .zero)
         addSubview(refreshButton)
         addSubview(composeButton)
+        addSubview(audioCallButton)
+        addSubview(videoCallButton)
         addSubview(searchField)
+    }
+
+    /// Calls need a 1:1 conversation; the tooltip says why the buttons are dimmed otherwise.
+    func setCallsEnabled(_ enabled: Bool, isGroup: Bool) {
+        for (button, name) in [(audioCallButton, "FaceTime Audio"), (videoCallButton, "FaceTime Video")] {
+            button.isEnabled = enabled
+            button.toolTip = enabled || !isGroup ? name : "\(name) works with one person at a time"
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -39,6 +54,10 @@ final class LionToolbarView: LionView {
         let halo = LionSearchField.halo
         searchField.frame = NSRect(x: bounds.width - searchWidth - 9 - halo, y: rowMid - 14 - halo,
                                    width: searchWidth + 2 * halo, height: 28 + 2 * halo)
+        // Audio and video sit together left of the search field, like iChat's call buttons.
+        let callsRight = bounds.width - searchWidth - 9 - 12
+        videoCallButton.frame = NSRect(x: callsRight - 34, y: rowMid - 11.5, width: 34, height: 23)
+        audioCallButton.frame = NSRect(x: callsRight - 34 - 6 - 34, y: rowMid - 11.5, width: 34, height: 23)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -104,7 +123,9 @@ struct ToolbarRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> LionToolbarView {
         let view = LionToolbarView(
             onRefresh: { [weak store] in store?.refresh() },
-            onCompose: { [weak store] in store?.focusComposer.send() })
+            onCompose: { [weak store] in store?.focusComposer.send() },
+            onAudioCall: { [weak store] in store?.requestCall(.audio) },
+            onVideoCall: { [weak store] in store?.requestCall(.video) })
         view.searchField.onChange = { [weak store] text in
             if store?.searchText != text { store?.searchText = text }
         }
@@ -123,6 +144,15 @@ struct ToolbarRepresentable: NSViewRepresentable {
                 view?.title = conversations.first { $0.id == id }?.title ?? "Lion Messages"
             }
             .store(in: &context.coordinator.cancellables)
+        // Re-check after any change that affects calling (selection, access, sheets).
+        store.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak view, weak store] in
+                guard let store else { return }
+                view?.setCallsEnabled(store.canCall, isGroup: store.selectedConversation?.isGroup ?? false)
+            }
+            .store(in: &context.coordinator.cancellables)
+        view.setCallsEnabled(store.canCall, isGroup: store.selectedConversation?.isGroup ?? false)
         return view
     }
 

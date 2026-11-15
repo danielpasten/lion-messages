@@ -147,7 +147,8 @@ final class ChatDatabase: @unchecked Sendable {
             SELECT c.ROWID, c.guid, \(s.chat("chat_identifier")), \(s.chat("display_name")),
                    \(s.chat("service_name")), \(s.chat("style")),
                    m.ROWID, m.guid, \(s.msg("text")), \(s.msg("attributedBody")), m.date, m.is_from_me,
-                   \(s.msg("cache_has_attachments"))
+                   \(s.msg("cache_has_attachments")),
+                   \(s.chat("is_filtered")), \(s.chat("is_blackholed")), \(s.repliedInFilteredChat)
             FROM chat c
             JOIN message m ON m.ROWID = (
                 SELECT cmj.message_id FROM chat_message_join cmj
@@ -177,7 +178,9 @@ final class ChatDatabase: @unchecked Sendable {
                 title: self.title(displayName: row.string(3), handles: handles, identifier: identifier),
                 lastMessagePreview: preview ?? "",
                 lastMessageDate: AppleDate.date(fromRaw: row.int64(10)),
-                lastMessageIsFromMe: row.int64(11) != 0))
+                lastMessageIsFromMe: row.int64(11) != 0,
+                senderCategory: self.senderCategory(isFiltered: row.int64OrNil(13), isBlackholed: row.int64OrNil(14),
+                                                    hasReplied: (row.int64OrNil(15) ?? 0) != 0, handles: handles)))
         }
 
         // Rare: the newest candidate decoded to nothing (e.g. an unsent message). Look further back.
@@ -202,6 +205,20 @@ final class ChatDatabase: @unchecked Sendable {
         return result
     }
 
+    /// Messages' sender lists. `chat.is_filtered` is 1 for chats Messages filtered as from an
+    /// unknown sender and 2 for junk; `is_blackholed` marks chats from blocked senders. A filtered
+    /// chat counts as known once you've replied or any participant is in Contacts, as in Messages.
+    func senderCategory(isFiltered: Int64?, isBlackholed: Int64?, hasReplied: Bool, handles: [String]) -> SenderCategory {
+        if (isBlackholed ?? 0) != 0 { return .spam }
+        switch isFiltered ?? 0 {
+        case 2: return .spam
+        case 1:
+            if hasReplied || handles.contains(where: { contacts.name(for: $0) != nil }) { return .known }
+            return .unknown
+        default: return .known
+        }
+    }
+
     private func title(displayName: String?, handles: [String], identifier: String) -> String {
         if let name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty { return name }
         if !handles.isEmpty { return handles.map { contacts.displayName(for: $0) }.joined(separator: ", ") }
@@ -213,9 +230,11 @@ final class ChatDatabase: @unchecked Sendable {
     func loadMessages(in conversation: Conversation, limit: Int) async throws -> [Message] {
         guard limit > 0 else { return [] }
         return try await run {
-            let (rows, attachments) = try self.withConnection { c, s -> ([Row], [Int64: [AttachmentRecord]]) in
+            let (rows, attachments, reactions) = try self.withConnection { c, s
+                -> ([Row], [Int64: [AttachmentRecord]], [String: [Reaction]]) in
                 let rows = try self.displayableRows(c, s, chatID: conversation.id, limit: limit)
-                return (rows, try self.attachmentRecords(c, s, for: rows))
+                return (rows, try self.attachmentRecords(c, s, for: rows),
+                        try self.reactions(c, s, conversation: conversation, since: rows.last?.rawDate))
             }
             dataLog.info("loaded \(rows.count, privacy: .public) messages")
             return rows.reversed().map { row in
@@ -233,9 +252,43 @@ final class ChatDatabase: @unchecked Sendable {
                     serviceName: row.service ?? conversation.serviceName,
                     hasAttachment: row.hasAttachment,
                     attachments: records.filter { !$0.isHidden }.map { $0.attachment() },
-                    linkPreview: row.linkPayload.flatMap { Self.linkPreview(payload: $0, attachments: records) })
+                    linkPreview: row.linkPayload.flatMap { Self.linkPreview(payload: $0, attachments: records) },
+                    reactions: reactions[row.guid] ?? [])
             }
         }
+    }
+
+    // MARK: - Reactions
+
+    /// Tapbacks in the chat from `since` (the oldest loaded message's raw date) on, resolved per
+    /// target GUID. Walks the chat's join index by date, so only the loaded stretch is read.
+    private func reactions(_ c: SQLiteConnection, _ s: Schema, conversation: Conversation,
+                           since: Int64?) throws -> [String: [Reaction]] {
+        guard let since, s.message.contains("associated_message_guid"),
+              s.message.contains("associated_message_type") else { return [:] }
+        let handleJoin = s.message.contains("handle_id") ? "LEFT JOIN handle h ON h.ROWID = m.handle_id" : ""
+        let handleCol = handleJoin.isEmpty ? "NULL" : "h.id"
+        let dateFilter = s.chatMessageJoin.contains("message_date") ? "cmj.message_date >= ?" : "m.date >= ?"
+        let order = s.chatMessageJoin.contains("message_date") ? "cmj.message_date, m.ROWID" : "m.date, m.ROWID"
+        let sql = """
+            SELECT m.associated_message_guid, m.associated_message_type, \(s.msg("associated_message_emoji")),
+                   m.is_from_me, \(handleCol)
+            FROM chat_message_join cmj
+            JOIN message m ON m.ROWID = cmj.message_id
+            \(handleJoin)
+            WHERE cmj.chat_id = ? AND \(dateFilter)
+              AND m.associated_message_type BETWEEN 2000 AND 3999
+            ORDER BY \(order)
+            """
+        var rows: [ReactionResolver.Row] = []
+        try c.query(sql, [conversation.id, since]) { r in
+            let isFromMe = r.int64(3) != 0
+            var handle = isFromMe ? nil : r.string(4).flatMap { $0.isEmpty ? nil : $0 }
+            if !isFromMe, handle == nil, !conversation.isGroup { handle = conversation.participantHandles.first }
+            rows.append(.init(targetGUID: r.string(0), type: r.int64(1), emoji: r.string(2), isFromMe: isFromMe,
+                              handle: handle, senderName: handle.map { self.contacts.displayName(for: $0) }))
+        }
+        return ReactionResolver.resolve(rows)
     }
 
     // MARK: - Attachments & link previews
@@ -441,6 +494,17 @@ struct Schema {
 
     func chat(_ col: String) -> String {
         chat.contains(col.lowercased()) ? "c.\(col)" : "NULL"
+    }
+
+    /// For chats Messages filtered as from an unknown sender (`c.is_filtered = 1`): whether you
+    /// sent anything in it. NULL for every other chat, so the lookup only runs where it matters.
+    var repliedInFilteredChat: String {
+        guard chat.contains("is_filtered"), message.contains("is_from_me") else { return "NULL" }
+        return """
+            CASE WHEN c.is_filtered = 1 THEN EXISTS (
+                SELECT 1 FROM chat_message_join rj JOIN message rm ON rm.ROWID = rj.message_id
+                WHERE rj.chat_id = c.ROWID AND rm.is_from_me = 1) END
+            """
     }
 
     /// SQL filter for rows that may be displayable: normal items, no tapbacks, not unsent, and

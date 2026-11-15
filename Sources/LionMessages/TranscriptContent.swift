@@ -349,6 +349,8 @@ struct MessageGeometry {
     /// Top of the buddy picture when it is shown in this row.
     let avatarY: CGFloat?
     let rowHeight: CGFloat
+    /// Width of the tapback badge (0 = no reactions).
+    var reactionWidth: CGFloat = 0
 
     func bodyRect(_ i: Int, cellWidth: CGFloat) -> NSRect {
         let p = parts[i]
@@ -363,6 +365,18 @@ struct MessageGeometry {
         return NSRect(x: b.minX - 1, y: b.minY - 1, width: b.width + 2, height: b.height + 1 + BubbleMetrics.shadowRoom)
     }
 
+    /// The tapback badge: over the first part's top corner on the far side from the sender's
+    /// edge (top right of an incoming bubble, top left of an outgoing one).
+    func reactionFrame(cellWidth: CGFloat) -> NSRect? {
+        guard reactionWidth > 0, !parts.isEmpty else { return nil }
+        let b = bodyRect(0, cellWidth: cellWidth)
+        let w = reactionWidth
+        var x = isFromMe ? b.minX - w + 12 : b.maxX - 12
+        x = min(max(x, 2), cellWidth - w - 2)
+        return NSRect(x: x, y: b.minY - ReactionBadge.headroom, width: w,
+                      height: ReactionBadge.height + ReactionBadge.shadowRoom)
+    }
+
     func avatarFrame(cellWidth: CGFloat) -> NSRect? {
         guard let y = avatarY else { return nil }
         let s = BuddyMetrics.size
@@ -374,6 +388,7 @@ struct MessageGeometry {
     func contentFrame(cellWidth: CGFloat) -> NSRect {
         var r = parts.indices.map { viewFrame($0, cellWidth: cellWidth) }.reduce(NSRect.null) { $0.union($1) }
         if let a = avatarFrame(cellWidth: cellWidth) { r = r.union(a) }
+        if let b = reactionFrame(cellWidth: cellWidth) { r = r.union(b) }
         return r.integral
     }
 }
@@ -457,7 +472,9 @@ final class TranscriptLayout {
             y += item.size.height
         }
         let total = y
-        let top = slot == .shown ? max(gap, BuddyMetrics.size - total) : gap
+        // Room above the first part for the tapback badge.
+        let headroom = m.reactions.isEmpty ? 0 : ReactionBadge.headroom
+        let top = slot == .shown ? max(gap + headroom, BuddyMetrics.size - total) : gap + headroom
         let shifted = placed.map { p -> MessageGeometry.Placed in
             var q = MessageGeometry.Placed(part: p.part, size: p.size, y: p.y + top)
             q.text = p.text
@@ -465,9 +482,11 @@ final class TranscriptLayout {
             return q
         }
         let side = BubbleMetrics.sideMargin + (slot == .none ? 0 : BuddyMetrics.column)
-        return MessageGeometry(isFromMe: m.isFromMe, parts: shifted, sideInset: side,
-                               avatarY: slot == .shown ? top + total - BuddyMetrics.size : nil,
-                               rowHeight: top + total + BubbleMetrics.shadowRoom)
+        var g = MessageGeometry(isFromMe: m.isFromMe, parts: shifted, sideInset: side,
+                                avatarY: slot == .shown ? top + total - BuddyMetrics.size : nil,
+                                rowHeight: top + total + BubbleMetrics.shadowRoom)
+        if !m.reactions.isEmpty { g.reactionWidth = ReactionBadge.width(m.reactions) }
+        return g
     }
 
     /// Aspect-fit within a `limit`-point square; pictures are never enlarged (videos may be).
