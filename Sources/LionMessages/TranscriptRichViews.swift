@@ -28,21 +28,91 @@ private func fillRect(for size: CGSize, in target: NSRect) -> NSRect {
     return NSRect(x: target.midX - w / 2, y: target.midY - h / 2, width: w, height: h)
 }
 
-/// The "wet" reflection of iChat and iPhone bubbles: the shape's outline inset from its edge,
-/// brightest at the top and ending in a crisp horizontal line `depth` points down.
-func drawReflection(in body: NSRect, radius: CGFloat, depth: CGFloat, color: NSColor,
-                    top: CGFloat, bottom: CGFloat, ctx: CGContext) {
-    let shape = body.insetBy(dx: 2, dy: 1.5)
-    let height = min(depth, shape.height)
-    guard shape.width > 6, height > 3 else { return }
-    let r = max(0, min(radius - 2, shape.width / 2, shape.height / 2))
-    let band = NSRect(x: shape.minX, y: shape.minY, width: shape.width, height: height.rounded())
-    ctx.saveGState()
-    ctx.addPath(CGPath(roundedRect: shape, cornerWidth: r, cornerHeight: r, transform: nil))
-    ctx.clip()
-    ctx.clip(to: band)
-    LionGradient(color.withAlphaComponent(top), color.withAlphaComponent(bottom)).drawVertical(in: band, flipped: true)
-    ctx.restoreGState()
+// MARK: - Bubble shape and gloss
+
+/// The speech-balloon outline and its glass, drawn after the artwork of Messages for Mac (2012):
+/// a rounded body with a small tail flaring out of the bottom corner on the sender's side, a
+/// reflection across the top, and light gathering along the bottom edge and in the tail.
+enum BubbleShape {
+    /// How far the tail reaches past the body.
+    static let tail: CGFloat = 6
+
+    /// The body inside a part's view: one point in, minus the shadow room and the tail.
+    static func body(in bounds: NSRect, tailed: Bool, isFromMe: Bool) -> NSRect {
+        let t = tailed ? tail : 0
+        return NSRect(x: bounds.minX + 1 + (isFromMe ? 0 : t), y: bounds.minY + 1,
+                      width: bounds.width - 2 - t, height: bounds.height - 1 - BubbleMetrics.shadowRoom)
+    }
+
+    /// The outline: `body` rounded by `radius`, plus the tail at its bottom corner (right for the
+    /// user's own bubbles, left for everyone else's) when `tailed`.
+    static func path(body b: NSRect, radius: CGFloat, tailed: Bool, isFromMe: Bool) -> CGPath {
+        let r = max(0, min(radius, b.width / 2, b.height / 2))
+        let rounded = CGPath(roundedRect: b, cornerWidth: r, cornerHeight: r, transform: nil)
+        guard tailed, b.height >= 12, b.width >= 20 else { return rounded }
+        // Built for the right side (flipped coordinates, y grows down), mirrored for the left.
+        let x = b.maxX, y = b.maxY
+        let t = CGMutablePath()
+        t.move(to: CGPoint(x: x - 9, y: y - 8))
+        t.addLine(to: CGPoint(x: x - 0.5, y: y - 8))
+        // The outer edge leaves the body's side and sweeps out to the point...
+        t.addQuadCurve(to: CGPoint(x: x + tail - 0.5, y: y - 0.75), control: CGPoint(x: x, y: y - 2))
+        // ...and the lower edge runs back in, meeting the body in a small notch.
+        t.addQuadCurve(to: CGPoint(x: x - 8, y: y - 1.75), control: CGPoint(x: x - 1.5, y: y - 0.4))
+        t.closeSubpath()
+        var mirror = CGAffineTransform.identity
+        if !isFromMe { mirror = CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: b.minX + b.maxX, ty: 0) }
+        return rounded.union(t.copy(using: &mirror)!)
+    }
+
+    /// The reflection: a pill set in from the outline across the top, brightest at the top edge
+    /// and ending in a crisp line `depth` points down.
+    static func drawReflection(body b: NSRect, radius: CGFloat, depth: CGFloat, top: CGFloat, bottom: CGFloat,
+                               ctx: CGContext) {
+        let h = min(depth, b.height * 0.46).rounded()
+        let r = NSRect(x: b.minX + 3, y: b.minY + 1, width: b.width - 6, height: h)
+        guard r.width > 8, r.height > 3 else { return }
+        let lower = min(3, r.height / 3)
+        let upper = max(0, min(radius - 2.5, r.width / 2, r.height - lower))
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: r.minX + upper, y: r.minY))
+        path.addArc(tangent1End: CGPoint(x: r.maxX, y: r.minY), tangent2End: CGPoint(x: r.maxX, y: r.maxY), radius: upper)
+        path.addArc(tangent1End: CGPoint(x: r.maxX, y: r.maxY), tangent2End: CGPoint(x: r.minX, y: r.maxY), radius: lower)
+        path.addArc(tangent1End: CGPoint(x: r.minX, y: r.maxY), tangent2End: CGPoint(x: r.minX, y: r.minY), radius: lower)
+        path.addArc(tangent1End: CGPoint(x: r.minX, y: r.minY), tangent2End: CGPoint(x: r.maxX, y: r.minY), radius: upper)
+        path.closeSubpath()
+        ctx.saveGState()
+        ctx.addPath(path)
+        ctx.clip()
+        LionGradient(NSColor(white: 1, alpha: top), NSColor(white: 1, alpha: bottom)).drawVertical(in: r, flipped: true)
+        ctx.restoreGState()
+    }
+
+    /// Light gathered at the bottom: a glow rising from the middle (`glow` at the bottom edge) and
+    /// a bright rim just inside the lower outline and the tail. Call while clipped to `path`.
+    static func drawUnderglow(path: CGPath, body b: NSRect, glow: CGFloat, rim: CGFloat, ctx: CGContext) {
+        let wide = b.insetBy(dx: -tail, dy: 0)
+        if glow > 0 {
+            let lower = NSRect(x: wide.minX, y: b.midY, width: wide.width, height: b.height / 2)
+            LionGradient(NSColor(white: 1, alpha: glow * 0.08), NSColor(white: 1, alpha: glow))
+                .drawVertical(in: lower, flipped: true)
+        }
+        ctx.saveGState()
+        ctx.clip(to: NSRect(x: wide.minX, y: b.maxY - min(6, b.height / 3), width: wide.width, height: 8))
+        ctx.addPath(path)
+        ctx.setLineWidth(2.5)
+        ctx.setStrokeColor(NSColor(white: 1, alpha: rim).cgColor)
+        ctx.strokePath()
+        ctx.restoreGState()
+    }
+
+    /// A one-point line just inside the outline (call while clipped to `path`).
+    static func drawBorder(path: CGPath, color: NSColor, ctx: CGContext) {
+        ctx.addPath(path)
+        ctx.setLineWidth(2)
+        ctx.setStrokeColor(color.cgColor)
+        ctx.strokePath()
+    }
 }
 
 /// One picture slot: asks the loader, ignores results that arrive after the view was reused.
@@ -104,8 +174,9 @@ final class BubbleView: NSView {
 
     override var isFlipped: Bool { true }
 
-    static func textFrame(textSize: NSSize) -> NSRect {
-        NSRect(x: 1 + BubbleMetrics.padX, y: 1 + BubbleMetrics.padY, width: textSize.width + 1, height: textSize.height)
+    static func textFrame(textSize: NSSize, isFromMe: Bool) -> NSRect {
+        let x = 1 + BubbleMetrics.padX + (isFromMe ? 0 : BubbleShape.tail)
+        return NSRect(x: x, y: 1 + BubbleMetrics.padY, width: textSize.width + 1, height: textSize.height)
     }
 
     override init(frame frameRect: NSRect) {
@@ -157,17 +228,19 @@ final class BubbleView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        let body = NSRect(x: 1, y: 1, width: bounds.width - 2, height: bounds.height - 1 - BubbleMetrics.shadowRoom)
+        let body = BubbleShape.body(in: bounds, tailed: true, isFromMe: isFromMe)
         Self.drawGel(in: body, isFromMe: isFromMe, palette: LionTheme.palette(for: effectiveAppearance), ctx: ctx)
     }
 
-    /// The gel: drop shadow, gradient body, gloss, inner highlight and border.
+    /// The gel balloon: drop shadow, tinted body, underglow, border and reflection, with its tail.
     static func drawGel(in body: NSRect, isFromMe: Bool, palette p: LionPalette, ctx: CGContext) {
-        let radius = min(16, body.height / 2, body.width / 2)
-        let path = CGPath(roundedRect: body, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        let radius = min(12, body.height / 2, body.width / 2)
+        let path = BubbleShape.path(body: body, radius: radius, tailed: true, isFromMe: isFromMe)
         let fill = isFromMe ? p.outgoingBubble : p.incomingBubble
+        // The same glass in both appearances, dimmer on the graphite bubbles.
+        let k: CGFloat = p.isDark ? 0.42 : 1
 
-        // Drop shadow (0/1px, low alpha).
+        // Drop shadow.
         ctx.saveGState()
         ctx.setShadow(offset: CGSize(width: 0, height: -1), blur: 1.5, color: p.bubbleShadow.cgColor)
         ctx.addPath(path)
@@ -175,42 +248,17 @@ final class BubbleView: NSView {
         ctx.fillPath()
         ctx.restoreGState()
 
-        // Gel body.
+        // Tinted body, light pooling at the bottom, and the border, all inside the outline.
         ctx.saveGState()
         ctx.addPath(path)
         ctx.clip()
-        fill.drawVertical(in: body, flipped: true)
-
-        // A soft glow rising from the bottom edge (light passing through the gel).
-        let g = p.bubbleGloss.alphaComponent
-        let glow = NSRect(x: body.minX, y: body.maxY - body.height * 0.4, width: body.width, height: body.height * 0.4)
-        LionGradient(p.bubbleGloss.withAlphaComponent(0), p.bubbleGloss.withAlphaComponent(g * 0.3))
-            .drawVertical(in: glow, flipped: true)
+        fill.drawVertical(in: body.insetBy(dx: -BubbleShape.tail, dy: 0), flipped: true)
+        BubbleShape.drawUnderglow(path: path, body: body, glow: 0.4 * k, rim: 0.6 * k, ctx: ctx)
+        BubbleShape.drawBorder(path: path, color: isFromMe ? p.outgoingBorder : p.incomingBorder, ctx: ctx)
         ctx.restoreGState()
 
-        // The reflection across the top, down to about the middle of the first line.
-        drawReflection(in: body, radius: radius, depth: min(body.height * 0.5, 14), color: p.bubbleGloss,
-                       top: g * 0.95, bottom: g * 0.4, ctx: ctx)
-
-        // Inner 1px highlight fading out down the top half.
-        let inner = body.insetBy(dx: 1, dy: 1)
-        let innerRadius = max(0, radius - 1)
-        ctx.saveGState()
-        ctx.addPath(CGPath(roundedRect: inner, cornerWidth: innerRadius, cornerHeight: innerRadius, transform: nil))
-        ctx.setLineWidth(1)
-        ctx.replacePathWithStrokedPath()
-        ctx.clip()
-        LionGradient(stops: [(p.bubbleGloss, 0), (p.bubbleGloss.withAlphaComponent(0), 0.55),
-                             (p.bubbleGloss.withAlphaComponent(0), 1)])
-            .drawVertical(in: inner, flipped: true)
-        ctx.restoreGState()
-
-        // Border.
-        let borderRect = body.insetBy(dx: 0.5, dy: 0.5)
-        ctx.addPath(CGPath(roundedRect: borderRect, cornerWidth: radius - 0.5, cornerHeight: radius - 0.5, transform: nil))
-        ctx.setStrokeColor((isFromMe ? p.outgoingBorder : p.incomingBorder).cgColor)
-        ctx.setLineWidth(1)
-        ctx.strokePath()
+        // The reflection across the top.
+        BubbleShape.drawReflection(body: body, radius: radius, depth: 9.5, top: 0.9 * k, bottom: 0.38 * k, ctx: ctx)
     }
 }
 
@@ -218,7 +266,7 @@ final class BubbleView: NSView {
 
 /// A framed inline picture (or a frameless sticker, or a video thumbnail with a play glyph).
 final class MediaView: ClickableView {
-    static let radius: CGFloat = 8
+    static let radius: CGFloat = 10
     private let slot = MediaSlot()
     private var pixelSize = CGSize.zero
     private var isSticker = false
@@ -239,15 +287,20 @@ final class MediaView: ClickableView {
     var onOpen: ((Int64) -> Void)?
     private(set) var attachmentID: Int64 = 0
 
-    /// The picture's frame without the shadow margin.
+    /// Which side the tail is on (stickers have none).
+    private var isFromMe = false
+
+    /// The picture's frame without the shadow margin and the tail.
     private var body: NSRect {
-        NSRect(x: 1, y: 1, width: bounds.width - 2, height: bounds.height - 1 - BubbleMetrics.shadowRoom)
+        BubbleShape.body(in: bounds, tailed: !isSticker, isFromMe: isFromMe)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func configure(attachment a: MessageAttachment, pixelSize: CGSize, isVideo: Bool, displaySize: NSSize, async: Bool) {
+    func configure(attachment a: MessageAttachment, isFromMe: Bool, pixelSize: CGSize, isVideo: Bool,
+                   displaySize: NSSize, async: Bool) {
         self.pixelSize = pixelSize
+        self.isFromMe = isFromMe
         isSticker = a.isSticker && !isVideo
         self.isVideo = isVideo
         attachmentID = a.id
@@ -283,7 +336,8 @@ final class MediaView: ClickableView {
             if let image = slot.image { drawImage(image, in: body, ctx: ctx) }
             return
         }
-        let path = CGPath(roundedRect: body, cornerWidth: Self.radius, cornerHeight: Self.radius, transform: nil)
+        // Pictures sit in the same balloon as text, tail and glass included.
+        let path = BubbleShape.path(body: body, radius: Self.radius, tailed: true, isFromMe: isFromMe)
         ctx.saveGState()
         ctx.setShadow(offset: CGSize(width: 0, height: -1), blur: 1.5, color: p.mediaShadow.cgColor)
         ctx.addPath(path)
@@ -291,23 +345,20 @@ final class MediaView: ClickableView {
         ctx.fillPath()
         ctx.restoreGState()
 
+        ctx.saveGState()
+        ctx.addPath(path)
+        ctx.clip()
         if let image = slot.image {
-            ctx.saveGState()
-            ctx.addPath(path)
-            ctx.clip()
-            drawImage(image, in: fillRect(for: CGSize(width: image.width, height: image.height), in: body), ctx: ctx)
-            ctx.restoreGState()
-            // Glass over the picture, like a photo in an iPhone bubble.
-            drawReflection(in: body, radius: Self.radius, depth: body.height * 0.42, color: .white,
-                           top: 0.34, bottom: 0.07, ctx: ctx)
+            // The tail shows the picture's edge continuing into it.
+            let area = body.insetBy(dx: -BubbleShape.tail, dy: 0)
+            drawImage(image, in: fillRect(for: CGSize(width: image.width, height: image.height), in: area), ctx: ctx)
         }
+        BubbleShape.drawUnderglow(path: path, body: body, glow: 0, rim: 0.45, ctx: ctx)
+        BubbleShape.drawBorder(path: path, color: p.mediaBorder, ctx: ctx)
+        ctx.restoreGState()
         if isVideo { Self.drawPlayGlyph(center: NSPoint(x: body.midX, y: body.midY), ctx: ctx) }
-
-        ctx.addPath(CGPath(roundedRect: body.insetBy(dx: 0.5, dy: 0.5), cornerWidth: Self.radius - 0.5,
-                           cornerHeight: Self.radius - 0.5, transform: nil))
-        ctx.setStrokeColor(p.mediaBorder.cgColor)
-        ctx.setLineWidth(1)
-        ctx.strokePath()
+        BubbleShape.drawReflection(body: body, radius: Self.radius, depth: min(16, body.height * 0.3),
+                                   top: 0.6, bottom: 0.16, ctx: ctx)
     }
 
     /// QuickTime-era play button: a dark translucent disc with a white rim and triangle.
@@ -361,7 +412,7 @@ final class FileBubbleView: ClickableView {
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext, let a = attachment, let url else { return }
         let p = LionTheme.palette(for: effectiveAppearance)
-        let body = NSRect(x: 1, y: 1, width: bounds.width - 2, height: bounds.height - 1 - BubbleMetrics.shadowRoom)
+        let body = BubbleShape.body(in: bounds, tailed: true, isFromMe: isFromMe)
         BubbleView.drawGel(in: body, isFromMe: isFromMe, palette: p, ctx: ctx)
 
         let m = FileBubbleMetrics.self
@@ -572,6 +623,13 @@ enum BuddyPicture {
         }
         ctx.restoreGState()
 
+        // Messages' picture frame: a light rim just inside the dark edge.
+        ctx.addPath(CGPath(roundedRect: rect.insetBy(dx: 1.5, dy: 1.5), cornerWidth: max(0, radius - 1.5),
+                           cornerHeight: max(0, radius - 1.5), transform: nil))
+        ctx.setStrokeColor(NSColor(white: 1, alpha: p.isDark ? 0.14 : 0.5).cgColor)
+        ctx.setLineWidth(1)
+        ctx.strokePath()
+
         ctx.addPath(CGPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), cornerWidth: radius - 0.5,
                            cornerHeight: radius - 0.5, transform: nil))
         ctx.setStrokeColor(p.buddyBorder.cgColor)
@@ -677,7 +735,8 @@ final class MessageCell: NSView {
             case (.text(let t), let v as BubbleView):
                 v.configure(text: t, isFromMe: m.isFromMe, containerWidth: placed.text?.containerWidth ?? placed.size.width)
             case (.media(let a, let pixelSize, let isVideo), let v as MediaView):
-                v.configure(attachment: a, pixelSize: pixelSize, isVideo: isVideo, displaySize: placed.size, async: loadsAsync)
+                v.configure(attachment: a, isFromMe: m.isFromMe, pixelSize: pixelSize, isVideo: isVideo,
+                            displaySize: placed.size, async: loadsAsync)
             case (.file(let a, let url), let v as FileBubbleView):
                 v.configure(attachment: a, url: url, isFromMe: m.isFromMe)
             case (.more(let n), let v as MoreView):
@@ -738,7 +797,7 @@ final class MessageCell: NSView {
         for (i, view) in partViews.enumerated() where i < g.parts.count {
             view.frame = g.viewFrame(i, cellWidth: w)
             if let bubble = view as? BubbleView, let text = g.parts[i].text {
-                bubble.textView.frame = BubbleView.textFrame(textSize: text.size)
+                bubble.textView.frame = BubbleView.textFrame(textSize: text.size, isFromMe: g.isFromMe)
             }
         }
         if let a = g.avatarFrame(cellWidth: w) { avatarView.frame = a }

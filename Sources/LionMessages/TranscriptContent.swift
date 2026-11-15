@@ -22,6 +22,16 @@ struct BubbleText: Hashable {
     let style: Style
     let links: [Link]
 
+    /// Every line as tall as a Lucida Grande line: an emoji (whose font is a third taller) would
+    /// otherwise make its line, and so the whole bubble, taller than its neighbors.
+    private static let bodyLines: NSParagraphStyle = {
+        let lineHeight = NSLayoutManager().defaultLineHeight(for: LionFont.regular(12))
+        let p = NSMutableParagraphStyle()
+        p.minimumLineHeight = lineHeight
+        p.maximumLineHeight = lineHeight
+        return p
+    }()
+
     func attributed(isFromMe: Bool, palette p: LionPalette) -> NSAttributedString {
         if style == .placeholder {
             return NSAttributedString(string: string, attributes: [
@@ -30,6 +40,7 @@ struct BubbleText: Hashable {
         }
         let s = NSMutableAttributedString(string: string, attributes: [
             .font: LionFont.regular(12), .foregroundColor: isFromMe ? p.outgoingText : p.incomingText,
+            .paragraphStyle: Self.bodyLines,
         ])
         for link in links {
             s.addAttribute(.link, value: link.url, range: NSRange(location: link.location, length: link.length))
@@ -209,7 +220,8 @@ enum AvatarSlot: Hashable {
 
 enum BuddyMetrics {
     static let size: CGFloat = 32
-    static let gap: CGFloat = 6
+    /// Between the picture and the tip of a bubble's tail.
+    static let gap: CGFloat = 3
     static var column: CGFloat { size + gap }
 }
 
@@ -358,11 +370,24 @@ struct MessageGeometry {
         return NSRect(x: x, y: p.y, width: p.size.width, height: p.size.height)
     }
 
-    /// The part's view frame: one point around the body, plus room for the drop shadow.
+    /// Whether the part is a balloon with a tail (text, files, pictures and videos; not stickers,
+    /// link cards or "+N more").
+    func isTailed(_ i: Int) -> Bool {
+        switch parts[i].part {
+        case .text, .file: return true
+        case .media(let a, _, let isVideo): return isVideo || !a.isSticker
+        case .more, .card: return false
+        }
+    }
+
+    /// The part's view frame: one point around the body, plus room for the drop shadow and, on
+    /// the sender's side, the tail.
     func viewFrame(_ i: Int, cellWidth: CGFloat) -> NSRect {
         let b = bodyRect(i, cellWidth: cellWidth)
         if case .more = parts[i].part { return b }
-        return NSRect(x: b.minX - 1, y: b.minY - 1, width: b.width + 2, height: b.height + 1 + BubbleMetrics.shadowRoom)
+        let tail = isTailed(i) ? BubbleShape.tail : 0
+        return NSRect(x: b.minX - 1 - (isFromMe ? 0 : tail), y: b.minY - 1, width: b.width + 2 + tail,
+                      height: b.height + 1 + BubbleMetrics.shadowRoom)
     }
 
     /// The tapback badge: over the first part's top corner on the far side from the sender's
@@ -424,7 +449,7 @@ final class TranscriptLayout {
     }
 
     static func maxTextWidth(columnWidth: CGFloat, slot: AvatarSlot) -> CGFloat {
-        let avatar = slot == .none ? 0 : BuddyMetrics.column
+        let avatar = (slot == .none ? 0 : BuddyMetrics.column) + BubbleShape.tail
         return max(60, floor((columnWidth - avatar) * 0.65) - 2 * BubbleMetrics.padX)
     }
 
@@ -481,7 +506,7 @@ final class TranscriptLayout {
             q.card = p.card
             return q
         }
-        let side = BubbleMetrics.sideMargin + (slot == .none ? 0 : BuddyMetrics.column)
+        let side = BubbleMetrics.sideMargin + BubbleShape.tail + (slot == .none ? 0 : BuddyMetrics.column)
         var g = MessageGeometry(isFromMe: m.isFromMe, parts: shifted, sideInset: side,
                                 avatarY: slot == .shown ? top + total - BuddyMetrics.size : nil,
                                 rowHeight: top + total + BubbleMetrics.shadowRoom)
