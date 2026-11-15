@@ -39,6 +39,11 @@ Screenshots show the built-in demo data, not real conversations.
   confirm first, then FaceTime opens its own call window (one-person conversations only)
 - Reactions (tapbacks, including emoji reactions) as a small glossy badge on the bubble's
   corner, with counts; blue when one is yours, and a tooltip saying who reacted
+- Notifications for new messages (View ▸ Show Notifications, on by default): a banner with the
+  sender and message, a Dock badge for what arrived while Lion Messages was in the background,
+  and a click opens the conversation. None for the conversation you're reading, your own
+  messages, spam, or filtered unknown senders. Messages.app posts its own notifications too; to
+  avoid seeing both, turn Messages' off in System Settings ▸ Notifications
 - Lion-style animations; respects Reduce Motion
 
 ## Requirements

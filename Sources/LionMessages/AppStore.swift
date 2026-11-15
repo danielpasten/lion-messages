@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import ImageIO
+import MessagesData
 import MessagesModel
 
 /// What the transcript should show, plus why it changed (drives scrolling).
@@ -111,6 +112,10 @@ final class AppStore: ObservableObject {
     @Published private(set) var pendingCall: PendingCall?
     /// The sender list the sidebar shows.
     @Published private(set) var scope: SidebarScope = .known
+    /// Fires with conversations that just received a message worth a notification (not from the
+    /// user, not spam, and not a filtered unknown sender).
+    let newIncoming = PassthroughSubject<[Conversation], Never>()
+    private var incomingTracker = IncomingMessageTracker()
     /// View ▸ Filter Unknown Senders (persisted): unknown senders get their own list.
     @Published private(set) var filtersUnknownSenders: Bool
     /// Pinned conversations, in pin order, for the grid at the top of the sidebar. Empty while
@@ -419,6 +424,14 @@ final class AppStore: ObservableObject {
             let list = try await service.loadConversations()
             messagesPinKeys = await service.pinnedConversationKeys()
             conversations = list
+            let fresh = incomingTracker.update(with: list).filter { c in
+                switch c.senderCategory {
+                case .known: return true
+                case .unknown: return !filtersUnknownSenders
+                case .spam: return false
+                }
+            }
+            if !fresh.isEmpty { newIncoming.send(fresh) }
             applyFilter()
             if let id = selectedConversationID, !list.contains(where: { $0.id == id }) {
                 select(list.first?.id)
@@ -428,6 +441,7 @@ final class AppStore: ObservableObject {
             let state = await service.checkAccess()
             if state != .granted {
                 accessState = state
+                incomingTracker.reset()
                 didBootstrap = false
                 service.stopWatching()
                 startPolling()
@@ -531,6 +545,21 @@ final class AppStore: ObservableObject {
         scope = newScope
         applyFilter()
         selectFirstIfHidden()
+    }
+
+    /// Opens a conversation from outside the sidebar (a notification): switches to the list it
+    /// is in and clears the search so it can be seen.
+    func showConversation(_ id: Int64) {
+        guard let c = conversations.first(where: { $0.id == id }) else { return }
+        let target: SidebarScope
+        switch c.senderCategory {
+        case .spam: target = .spam
+        case .unknown: target = filtersUnknownSenders ? .unknown : .known
+        case .known: target = .known
+        }
+        if !searchText.isEmpty { searchText = "" }
+        setScope(target)
+        select(id)
     }
 
     func setFiltersUnknownSenders(_ on: Bool, persist: Bool = true) {

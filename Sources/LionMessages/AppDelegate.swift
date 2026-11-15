@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var demoService: DemoMessagesService?
     private var sequenceStarted = false
     private var cancellables: Set<AnyCancellable> = []
+    private var notifications: NotificationController?
 
     init(options: LaunchOptions) {
         self.options = options
@@ -69,6 +70,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if let search = options.search { store.searchText = search }
 
         makeWindow()
+        UserDefaults.standard.register(defaults: [NotificationController.defaultsKey: true])
+        // The demo never posts real notifications.
+        let notify = NotificationController(store: store, window: window,
+                                            enabled: !options.demo && UserDefaults.standard.bool(forKey: NotificationController.defaultsKey))
+        notify.start()
+        notifications = notify
         store.start()
         if let presentError = options.presentError {
             after(0.5) { [weak self] in
@@ -280,6 +287,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     @objc private func attachFiles(_ sender: Any?) { store.requestAttachPanel() }
 
+    @objc private func toggleNotifications(_ sender: Any?) {
+        guard let notifications else { return }
+        notifications.setEnabled(!notifications.isEnabled)
+    }
+
     @objc private func toggleFetchLinkPreviews(_ sender: Any?) {
         store.setFetchLinkPreviews(!store.fetchesLinkPreviews)
     }
@@ -325,6 +337,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleBuddyPictures(_:)) {
             menuItem.state = store?.showBuddyPictures == true ? .on : .off
+        }
+        if menuItem.action == #selector(toggleNotifications(_:)) {
+            menuItem.state = notifications?.isEnabled == true ? .on : .off
+            return NotificationController.isAvailable && !options.demo
         }
         if menuItem.action == #selector(toggleFetchLinkPreviews(_:)) {
             menuItem.state = store?.fetchesLinkPreviews == true ? .on : .off
@@ -503,6 +519,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                                          keyEquivalent: "")
         filterUnknown.target = self
         filterUnknown.toolTip = "List messages from people who aren’t in your contacts, and whom you haven’t replied to, separately."
+        let notify = view.addItem(withTitle: "Show Notifications", action: #selector(toggleNotifications(_:)),
+                                  keyEquivalent: "")
+        notify.target = self
+        notify.toolTip = "Show a notification when a message arrives in a conversation you aren’t reading."
         let previews = view.addItem(withTitle: "Fetch Missing Link Previews", action: #selector(toggleFetchLinkPreviews(_:)),
                                     keyEquivalent: "")
         previews.target = self
