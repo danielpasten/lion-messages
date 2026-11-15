@@ -85,7 +85,7 @@ final class LionScrollView: NSScrollView {
 // MARK: - Glyphs (Lion used small monochrome glyphs, not SF Symbols)
 
 enum LionGlyph {
-    case refresh, compose
+    case refresh, compose, paperclip
 
     /// Stroked outline, plus an optional filled part (arrow heads).
     func paths(in r: NSRect) -> (stroke: NSBezierPath, fill: NSBezierPath?) {
@@ -126,6 +126,22 @@ enum LionGlyph {
             pencil.line(to: NSPoint(x: r.midX - 0.5, y: r.midY + 5))
             pencil.close()
             p.append(pencil)
+        case .paperclip:
+            // A classic two-loop paperclip, drawn upright around the origin, then tilted 45°.
+            let clip = NSBezierPath()
+            clip.move(to: NSPoint(x: 0, y: -2.6))
+            clip.line(to: NSPoint(x: 0, y: 3.4))
+            clip.appendArc(withCenter: NSPoint(x: -1.15, y: 3.4), radius: 1.15, startAngle: 0, endAngle: 180, clockwise: false)
+            clip.line(to: NSPoint(x: -2.3, y: -3.9))
+            clip.appendArc(withCenter: NSPoint(x: 0, y: -3.9), radius: 2.3, startAngle: 180, endAngle: 360, clockwise: false)
+            clip.line(to: NSPoint(x: 2.3, y: 5.2))
+            var t = AffineTransform(translationByX: c.x, byY: c.y)
+            t.rotate(byDegrees: 45)
+            t.scale(1.12)
+            clip.transform(using: t)
+            clip.lineWidth = 1.5
+            p.append(clip)
+            p.lineWidth = 1.5
         }
         return p
     }
@@ -136,6 +152,9 @@ enum LionGlyph {
 final class LionTexturedButton: LionView {
     var glyph: LionGlyph
     var action: () -> Void
+    var isEnabled = true {
+        didSet { if isEnabled != oldValue { needsDisplay = true; setAccessibilityEnabled(isEnabled) } }
+    }
     private var pressed = false { didSet { needsDisplay = true } }
 
     init(glyph: LionGlyph, toolTip: String, action: @escaping () -> Void) {
@@ -172,7 +191,7 @@ final class LionTexturedButton: LionView {
         NSGraphicsContext.saveGraphicsState()
         p.etchShadow.nsShadow.set()
         let g = glyph.paths(in: glyphRect)
-        p.texturedGlyph.withAlphaComponent(0.5 + 0.5 * activeFraction).set()
+        p.texturedGlyph.withAlphaComponent((0.5 + 0.5 * activeFraction) * (isEnabled ? 1 : 0.4)).set()
         g.stroke.lineCapStyle = .round
         g.stroke.lineJoinStyle = .round
         g.stroke.stroke()
@@ -181,6 +200,7 @@ final class LionTexturedButton: LionView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
         pressed = true
         var inside = true
         while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {

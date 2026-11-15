@@ -21,12 +21,15 @@ enum LionMotion {
     static let bubbleStartScale: CGFloat = 0.92
     static let transcriptScroll: TimeInterval = 0.28
     static let transcriptCrossfade: TimeInterval = 0.12
+    /// A row that just gained a fetched link preview fades in.
+    static let linkPreviewFade: TimeInterval = 0.2
     /// How long a conversation switch may hold the old transcript while the new one loads.
     static let transcriptLoadHold: TimeInterval = 0.3
 
     // Composer
     static let composerResize: TimeInterval = 0.15
     static let sendFlash: TimeInterval = 0.12
+    static let dropHighlight: TimeInterval = 0.15
 
     // Sidebar
     static let sidebarMove: TimeInterval = 0.25

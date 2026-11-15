@@ -12,6 +12,8 @@ struct TranscriptState: Equatable {
         case refreshed
         /// The user just sent something: scroll to the bottom.
         case sent
+        /// Fetched link previews were added to these messages: re-measure them in place, fade.
+        case linkPreviews(Set<Int64>)
     }
 
     var conversationID: Int64?
@@ -40,7 +42,13 @@ final class AppStore: ObservableObject {
     @Published private(set) var selectedConversationID: Int64?
     @Published private(set) var transcript = TranscriptState.empty
     @Published var draft = ""
+    /// Files waiting to be sent with the draft. Global, like the text draft.
+    @Published private(set) var pendingAttachments: [PendingAttachment] = []
     @Published private(set) var isSending = false
+    /// A send that includes files is running (staging large files can take a moment).
+    @Published private(set) var isSendingAttachments = false
+    /// Files are being dragged over the conversation area.
+    @Published private(set) var isDropTargeted = false
     @Published var presentedError: PresentedError?
     /// View ▸ Show Buddy Pictures (persisted; `--buddy-pictures` overrides it for one launch).
     @Published private(set) var showBuddyPictures: Bool
@@ -51,8 +59,13 @@ final class AppStore: ObservableObject {
     let focusComposer = PassthroughSubject<Void, Never>()
     /// Fires when a send starts (the Send button shows its pressed state briefly).
     let didStartSend = PassthroughSubject<Void, Never>()
+    /// The Attach button or File ▸ Attach Files… asks for the open panel (the app delegate owns the window).
+    let attachPanelRequested = PassthroughSubject<Void, Never>()
 
     private let service: MessagesService
+    /// Cached and fetched previews for links the user sent (see LinkPreviewFetcher.swift).
+    let linkPreviews: LinkPreviewService
+    private var cancellables: Set<AnyCancellable> = []
     private let forcePermissionScreen: Bool
     private let initialSelectionIndex: Int
     private var pollTimer: Timer?
@@ -70,14 +83,51 @@ final class AppStore: ObservableObject {
     private var buddyPictureRequests: [String: String?] = [:]
     private var buddyPictureFetching: Set<String> = []
 
-    init(service: MessagesService, forcePermissionScreen: Bool = false, initialSelectionIndex: Int = 0,
-         buddyPicturesOverride: Bool? = nil) {
+    init(service: MessagesService, linkPreviews: LinkPreviewService, forcePermissionScreen: Bool = false,
+         initialSelectionIndex: Int = 0, buddyPicturesOverride: Bool? = nil) {
         self.service = service
+        self.linkPreviews = linkPreviews
         self.forcePermissionScreen = forcePermissionScreen
         self.initialSelectionIndex = initialSelectionIndex
         let defaults = UserDefaults.standard
         defaults.register(defaults: [Self.buddyPicturesDefaultsKey: true])
         showBuddyPictures = buddyPicturesOverride ?? defaults.bool(forKey: Self.buddyPicturesDefaultsKey)
+        linkPreviews.didUpdate
+            .sink { [weak self] in self?.applyFetchedPreviews() }
+            .store(in: &cancellables)
+    }
+
+    // MARK: Link previews
+
+    /// View ▸ Fetch Missing Link Previews.
+    var fetchesLinkPreviews: Bool { linkPreviews.isEnabled }
+
+    func setFetchLinkPreviews(_ on: Bool, persist: Bool = true) {
+        if persist { UserDefaults.standard.set(on, forKey: LinkPreviewService.defaultsKey) }
+        linkPreviews.setEnabled(on)
+        objectWillChange.send()
+        if on { linkPreviews.request(for: transcript.messages) }
+    }
+
+    /// A preview arrived (or the cache finished loading): attach it to the open transcript.
+    private func applyFetchedPreviews() {
+        let current = transcript
+        guard current.conversationID != nil, !current.messages.isEmpty else { return }
+        let decorated = linkPreviews.decorate(current.messages)
+        let changed = Set(zip(current.messages, decorated).filter { $0 != $1 }.map(\.1.id))
+        guard !changed.isEmpty else {
+            linkPreviews.request(for: current.messages)
+            return
+        }
+        let generation = messageLoadGeneration
+        Task {
+            await MediaGeometry.prewarm(decorated)
+            guard generation == messageLoadGeneration, transcript.conversationID == current.conversationID,
+                  transcript.messages.map(\.id) == current.messages.map(\.id) else { return }
+            transcript = TranscriptState(conversationID: current.conversationID, isGroup: current.isGroup,
+                                         messages: linkPreviews.decorate(transcript.messages), reason: .linkPreviews(changed))
+            linkPreviews.request(for: transcript.messages)
+        }
     }
 
     // MARK: Buddy pictures
@@ -144,7 +194,48 @@ final class AppStore: ObservableObject {
 
     var canSend: Bool {
         !isSending && selectedConversation != nil
-            && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingAttachments.isEmpty)
+    }
+
+    // MARK: Attachments
+
+    /// Files can be added while a conversation is open and no sheet is up.
+    var canAcceptAttachments: Bool {
+        accessState == .granted && selectedConversation != nil && presentedError == nil
+    }
+
+    /// Adds files as pending attachments (duplicates and folders are skipped). Returns whether
+    /// anything was accepted.
+    @discardableResult
+    func addAttachments(_ urls: [URL]) -> Bool {
+        guard canAcceptAttachments else { return false }
+        var known = Set(pendingAttachments.map { $0.url.standardizedFileURL.path })
+        var added: [PendingAttachment] = []
+        for url in urls where url.isFileURL {
+            let path = url.standardizedFileURL.path
+            var isDirectory: ObjCBool = false
+            guard !known.contains(path), FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue else { continue }
+            known.insert(path)
+            added.append(PendingAttachment(url: url.standardizedFileURL))
+        }
+        guard !added.isEmpty else { return false }
+        pendingAttachments += added
+        return true
+    }
+
+    func removeAttachment(_ id: PendingAttachment.ID) {
+        pendingAttachments.removeAll { $0.id == id }
+        focusComposer.send()
+    }
+
+    func requestAttachPanel() {
+        guard canAcceptAttachments else { return }
+        attachPanelRequested.send()
+    }
+
+    func setDropTargeted(_ on: Bool) {
+        if isDropTargeted != on { isDropTargeted = on }
     }
 
     // MARK: Access
@@ -243,13 +334,15 @@ final class AppStore: ObservableObject {
         }
         messageLoadGeneration += 1
         let generation = messageLoadGeneration
-        let messages = (try? await service.loadMessages(in: conversation, limit: Self.messageLimit)) ?? []
+        let loaded = (try? await service.loadMessages(in: conversation, limit: Self.messageLimit)) ?? []
+        let messages = linkPreviews.decorate(loaded)
         // Picture/video sizes come from file headers, read off the main thread before the
         // transcript measures its rows.
         await MediaGeometry.prewarm(messages)
         guard generation == messageLoadGeneration, selectedConversationID == conversation.id else { return }
         transcript = TranscriptState(conversationID: conversation.id, isGroup: conversation.isGroup,
                                      messages: messages, reason: reason)
+        linkPreviews.request(for: messages)
     }
 
     private func databaseDidChange() {
@@ -300,21 +393,32 @@ final class AppStore: ObservableObject {
 
     func sendDraft() {
         let original = draft
+        let originalAttachments = pendingAttachments
         let text = original.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isSending, let conversation = selectedConversation else { return }
+        guard !text.isEmpty || !originalAttachments.isEmpty, !isSending,
+              let conversation = selectedConversation else { return }
         didStartSend.send()
         draft = ""
+        pendingAttachments = []
         isSending = true
+        isSendingAttachments = !originalAttachments.isEmpty
         Task {
             do {
-                try await service.send(text, to: conversation)
+                if originalAttachments.isEmpty {
+                    try await service.send(text, to: conversation)
+                } else {
+                    try await service.send(attachments: originalAttachments.map(\.url), text: text, to: conversation)
+                }
                 isSending = false
+                isSendingAttachments = false
                 if selectedConversationID == conversation.id {
                     await loadMessages(reason: .sent)
                 }
             } catch {
                 isSending = false
+                isSendingAttachments = false
                 if draft.isEmpty { draft = original }
+                if pendingAttachments.isEmpty { pendingAttachments = originalAttachments }
                 let sendError = (error as? SendError) ?? .scriptFailed(error.localizedDescription)
                 presentedError = PresentedError(error: sendError)
             }

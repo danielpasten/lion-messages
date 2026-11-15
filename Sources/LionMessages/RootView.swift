@@ -68,6 +68,13 @@ struct RootView: View {
                             EtchedText(text: "No Conversation Selected")
                         }
                     }
+                    // Files dragged over the conversation (transcript or composer) light it up.
+                    .overlay {
+                        if store.isDropTargeted {
+                            DropHighlight().transition(.opacity)
+                        }
+                    }
+                    .animation(LionMotion.easeOut(LionMotion.dropHighlight), value: store.isDropTargeted)
                 ComposerView(store: store)
             }
         }

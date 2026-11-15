@@ -1,6 +1,7 @@
 import AppKit
 import MessagesData
 import MessagesModel
+import Combine
 import Quartz
 import SwiftUI
 
@@ -12,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var decoyWindow: NSWindow?
     private var demoService: DemoMessagesService?
     private var sequenceStarted = false
+    private var cancellables: Set<AnyCancellable> = []
 
     init(options: LaunchOptions) {
         self.options = options
@@ -42,7 +44,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         } else {
             service = LiveMessagesService()
         }
-        store = AppStore(service: service, forcePermissionScreen: options.forcePermissionScreen,
+        // Link previews for links the user sent: the app's only network use (see LinkPreviewFetcher).
+        // The demo swaps in a stub fetcher and a temporary cache, so it never touches the network.
+        UserDefaults.standard.register(defaults: [LinkPreviewService.defaultsKey: true])
+        let fetchPreviews = options.fetchLinkPreviews ?? UserDefaults.standard.bool(forKey: LinkPreviewService.defaultsKey)
+        let linkPreviews: LinkPreviewService
+        if let demo = demoService {
+            let art = demo.linkPreviewStubArt
+            linkPreviews = LinkPreviewService(fetcher: StubLinkMetadataFetcher(image: art.image, icon: art.icon),
+                                              cache: LinkPreviewCache(directory: demo.linkPreviewCacheDirectory),
+                                              enabled: fetchPreviews)
+        } else {
+            linkPreviews = LinkPreviewService(fetcher: LiveLinkMetadataFetcher(),
+                                              cache: LinkPreviewCache(directory: LinkPreviewCache.defaultDirectory),
+                                              enabled: fetchPreviews)
+        }
+        store = AppStore(service: service, linkPreviews: linkPreviews, forcePermissionScreen: options.forcePermissionScreen,
                          initialSelectionIndex: options.selectIndex, buddyPicturesOverride: options.buddyPictures)
         if let draft = options.draft { store.draft = draft }
         if let search = options.search { store.searchText = search }
@@ -58,9 +75,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
-        if options.draft != nil {
+        if options.draft != nil || !options.attachPaths.isEmpty {
             after(0.4) { [weak self] in
                 guard let self else { return }
+                if !self.options.attachPaths.isEmpty {
+                    self.store.addAttachments(self.options.attachPaths.map { URL(fileURLWithPath: $0) })
+                }
                 self.store.focusComposer.send()
                 if self.options.sendDraft {
                     // Let the focus ring settle first so a frame sequence shows only the send.
@@ -70,6 +90,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                     }
                 }
             }
+        }
+        if options.showDropHighlight {
+            after(0.4) { [weak self] in self?.store.setDropTargeted(true) }
+        }
+        store.attachPanelRequested
+            .sink { [weak self] in self?.showAttachPanel() }
+            .store(in: &cancellables)
+        if options.sequenceDir != nil {
+            // `--sequence-on linkpreview`: frames start as a fetched preview reaches the transcript.
+            store.$transcript
+                .sink { [weak self] state in
+                    if case .linkPreviews = state.reason { self?.beginSequence("linkpreview") }
+                }
+                .store(in: &cancellables)
         }
         if options.inactive {
             // Hand key status to an invisible window so the main window draws inactive.
@@ -191,7 +225,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         window.collectionBehavior.insert(.fullScreenPrimary)
         window.delegate = self
 
-        let hosting = NSHostingView(rootView: RootView(store: store))
+        let hosting = LionHostingView(rootView: RootView(store: store))
+        hosting.store = store
         hosting.sizingOptions = []
         window.contentView = hosting
         window.setContentSize(size)
@@ -222,6 +257,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     @objc private func showMainWindow(_ sender: Any?) { window.makeKeyAndOrderFront(nil) }
 
+    @objc private func attachFiles(_ sender: Any?) { store.requestAttachPanel() }
+
+    @objc private func toggleFetchLinkPreviews(_ sender: Any?) {
+        store.setFetchLinkPreviews(!store.fetchesLinkPreviews)
+    }
+
+    /// File ▸ Attach Files… and the composer's paperclip: a standard open panel as a sheet.
+    private func showAttachPanel() {
+        guard window.attachedSheet == nil else { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.resolvesAliases = true
+        panel.prompt = "Attach"
+        panel.message = "Choose files to send."
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            if response == .OK { self.store.addAttachments(panel.urls) }
+            self.store.focusComposer.send()
+        }
+    }
+
     @objc private func toggleBuddyPictures(_ sender: Any?) {
         store.setShowBuddyPictures(!store.showBuddyPictures)
     }
@@ -229,6 +287,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleBuddyPictures(_:)) {
             menuItem.state = store?.showBuddyPictures == true ? .on : .off
+        }
+        if menuItem.action == #selector(toggleFetchLinkPreviews(_:)) {
+            menuItem.state = store?.fetchesLinkPreviews == true ? .on : .off
+        }
+        if menuItem.action == #selector(attachFiles(_:)) {
+            return store?.canAcceptAttachments == true && window.attachedSheet == nil
         }
         return true
     }
@@ -263,7 +327,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private func waitForMedia(until deadline: CFTimeInterval, quietChecks: Int = 0, _ done: @escaping @MainActor () -> Void) {
         window.contentView?.superview?.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
-        let idle = MediaLoader.shared.isIdle && !store.isLoadingBuddyPictures
+        let idle = MediaLoader.shared.isIdle && !store.isLoadingBuddyPictures && store.linkPreviews.isIdle
         if (idle && quietChecks >= 2) || CACurrentMediaTime() > deadline {
             done()
             return
@@ -345,6 +409,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         app.addItem(withTitle: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         main.addItem(withTitle: appName, action: nil, keyEquivalent: "").submenu = app
 
+        let file = NSMenu(title: "File")
+        let attach = file.addItem(withTitle: "Attach Files…", action: #selector(attachFiles(_:)), keyEquivalent: "A")
+        attach.keyEquivalentModifierMask = [.command, .shift]
+        attach.target = self
+        main.addItem(withTitle: "File", action: nil, keyEquivalent: "").submenu = file
+
         let edit = NSMenu(title: "Edit")
         edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
         edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
@@ -369,6 +439,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                                    keyEquivalent: "b")
         buddies.keyEquivalentModifierMask = [.command, .shift]
         buddies.target = self
+        let previews = view.addItem(withTitle: "Fetch Missing Link Previews", action: #selector(toggleFetchLinkPreviews(_:)),
+                                    keyEquivalent: "")
+        previews.target = self
+        previews.toolTip = "Load previews from the web for links you sent that have none. This is the only time Lion Messages uses the network."
         view.addItem(.separator())
         view.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
             .keyEquivalentModifierMask = [.command, .control]

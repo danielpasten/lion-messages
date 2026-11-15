@@ -151,6 +151,12 @@ public protocol MessagesService: AnyObject {
     /// Sends `text` to the conversation via Messages.app. Throws `SendError`.
     func send(_ text: String, to conversation: Conversation) async throws
 
+    /// Sends local files, then `text` (when it isn't blank), to the conversation via Messages.app,
+    /// in that order. Throws `SendError`. Has a default implementation that only handles text, so
+    /// other conformers keep compiling; it is a requirement so the live implementation is reached
+    /// through the protocol.
+    func send(attachments: [URL], text: String, to conversation: Conversation) async throws
+
     /// Contact picture (encoded image data) for a handle, or the user's own picture when
     /// `handle` is nil. Nil when there is no picture or Contacts access is missing.
     /// Has a default implementation returning nil.
@@ -159,6 +165,13 @@ public protocol MessagesService: AnyObject {
 
 public extension MessagesService {
     func contactImageData(forHandle handle: String?) async -> Data? { nil }
+
+    func send(attachments: [URL], text: String, to conversation: Conversation) async throws {
+        guard attachments.isEmpty else {
+            throw SendError.scriptFailed("Sending files isn’t supported here.")
+        }
+        try await send(text, to: conversation)
+    }
 }
 
 public enum LionConstants {

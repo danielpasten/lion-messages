@@ -1,5 +1,6 @@
 import Foundation
 import MessagesModel
+import UniformTypeIdentifiers
 
 /// Believable but entirely invented conversations, for development and screenshots (`--demo`).
 final class DemoMessagesService: MessagesService {
@@ -15,6 +16,20 @@ final class DemoMessagesService: MessagesService {
     private var nextAttachmentID: Int64 = 9_000
     /// Pictures, files and buddy pictures drawn at launch into a temporary folder.
     private let art = DemoArt.make()
+
+    /// Files for the `--demo` link-preview stub (never fetched from the network).
+    var linkPreviewStubArt: (image: URL, icon: URL) { (art.cabinView, art.previewIcon) }
+    /// The demo's link-preview cache: a fresh temporary folder per launch (so the stub's fetch
+    /// is seen every time), never the real cache. Leftovers from earlier launches are removed.
+    lazy var linkPreviewCacheDirectory: URL = {
+        let parent = art.directory.appendingPathComponent("LinkPreviews", isDirectory: true)
+        let fm = FileManager.default
+        for old in (try? fm.contentsOfDirectory(at: parent, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
+            let date = (try? old.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            if Date().timeIntervalSince(date) > 3600 { try? fm.removeItem(at: old) }
+        }
+        return parent.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    }()
 
     init(now: Date = Date()) {
         build(now: now)
@@ -52,6 +67,39 @@ final class DemoMessagesService: MessagesService {
         if let i = conversations.firstIndex(where: { $0.id == conversation.id }) {
             conversations[i].lastMessagePreview = text
             conversations[i].lastMessageDate = message.date
+            conversations[i].lastMessageIsFromMe = true
+        }
+        let handler = onChange
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { handler?() }
+    }
+
+    /// Appends one message per file (pointing at the file itself, so it shows inline), then the text.
+    func send(attachments: [URL], text: String, to conversation: Conversation) async throws {
+        // A little longer than text, so the composer's spinner is visible.
+        try await Task.sleep(nanoseconds: 450_000_000)
+        if let simulatedSendError { throw simulatedSendError }
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var sent: [Message] = []
+        for url in attachments {
+            let type = UTType(filenameExtension: url.pathExtension)
+            let kind: MessageAttachment.Kind = type?.conforms(to: .image) == true ? .image
+                : type?.conforms(to: .movie) == true ? .video : type?.conforms(to: .audio) == true ? .audio : .other
+            sent.append(Message(id: nextMessageID, guid: "demo-\(nextMessageID)", text: LionConstants.attachmentPlaceholder,
+                                isFromMe: true, date: Date(), senderHandle: nil, senderName: nil,
+                                serviceName: conversation.serviceName, hasAttachment: true,
+                                attachments: [attachment(kind, url, mime: type?.preferredMIMEType, uti: type?.identifier)]))
+            nextMessageID += 1
+        }
+        if !body.isEmpty {
+            sent.append(Message(id: nextMessageID, guid: "demo-\(nextMessageID)", text: body, isFromMe: true,
+                                date: Date(), senderHandle: nil, senderName: nil,
+                                serviceName: conversation.serviceName, hasAttachment: false))
+            nextMessageID += 1
+        }
+        messages[conversation.id, default: []].append(contentsOf: sent)
+        if let i = conversations.firstIndex(where: { $0.id == conversation.id }), let last = sent.last {
+            conversations[i].lastMessagePreview = last.text
+            conversations[i].lastMessageDate = last.date
             conversations[i].lastMessageIsFromMe = true
         }
         let handler = onChange

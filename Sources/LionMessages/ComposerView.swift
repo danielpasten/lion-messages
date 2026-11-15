@@ -13,23 +13,41 @@ struct ComposerView: View {
     var body: some View {
         let p = LionTheme.palette(for: scheme)
         let halo = ComposerFieldView.halo
-        HStack(alignment: .bottom, spacing: 6) {
-            // The field view is `halo` larger on every side (room for the focus ring animation)
-            // without taking up more layout space.
-            ComposerFieldRepresentable(store: store, height: $fieldHeight)
-                .frame(height: fieldHeight + 2 * halo)
-                .padding(-halo)
-            Button("Send") { store.sendDraft() }
-                .buttonStyle(AquaButtonStyle(kind: .primary, forcePressed: sendFlash))
-                .disabled(!store.canSend && !sendFlash)
-                .padding(.bottom, ComposerFieldView.ringMargin + 2)
+        VStack(spacing: 0) {
+            if !store.pendingAttachments.isEmpty {
+                AttachmentTray(store: store)
+                    .transition(.opacity)
+            }
+            HStack(alignment: .bottom, spacing: 4) {
+                AttachButtonRepresentable(store: store, isEnabled: store.canAcceptAttachments)
+                    .frame(width: 30, height: 23)
+                    .padding(.bottom, ComposerFieldView.ringMargin + 1)
+                // The field view is `halo` larger on every side (room for the focus ring animation)
+                // without taking up more layout space.
+                ComposerFieldRepresentable(store: store, height: $fieldHeight)
+                    .frame(height: fieldHeight + 2 * halo)
+                    .padding(-halo)
+                if store.isSendingAttachments {
+                    LionSpinner()
+                        .frame(width: 16, height: 16)
+                        .padding(.bottom, ComposerFieldView.ringMargin + 5)
+                        .transition(.opacity)
+                }
+                Button("Send") { store.sendDraft() }
+                    .buttonStyle(AquaButtonStyle(kind: .primary, forcePressed: sendFlash))
+                    .disabled(!store.canSend && !sendFlash)
+                    .padding(.leading, 2)
+                    .padding(.bottom, ComposerFieldView.ringMargin + 2)
+            }
         }
+        .animation(LionMotion.easeOut(LionMotion.composerResize), value: store.pendingAttachments.map(\.id))
+        .animation(LionMotion.easeOut(LionMotion.composerResize), value: store.isSendingAttachments)
         .onReceive(store.didStartSend) {
             // Return-to-send: show the button pressed for a moment, as a click would.
             sendFlash = true
             DispatchQueue.main.asyncAfter(deadline: .now() + LionMotion.duration(LionMotion.sendFlash)) { sendFlash = false }
         }
-        .padding(.leading, 6)
+        .padding(.leading, 8)
         .padding(.trailing, 10)
         .padding(.vertical, 4)
         .background(p.composerBar.swiftUI)
@@ -166,6 +184,8 @@ final class ComposerFieldView: LionView {
 
 final class ComposerTextView: NSTextView {
     var onFocusChange: (Bool) -> Void = { _ in }
+    /// Files and pictures dropped or pasted here become pending attachments.
+    weak var store: AppStore?
     var placeholder = "iMessage" { didSet { needsDisplay = true } }
 
     override func becomeFirstResponder() -> Bool {
@@ -178,6 +198,70 @@ final class ComposerTextView: NSTextView {
         let ok = super.resignFirstResponder()
         if ok { onFocusChange(false) }
         return ok
+    }
+
+    // MARK: Attachments (plain text paste and text drags behave as before)
+
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
+        super.acceptableDragTypes + AttachmentPasteboard.dragTypes
+    }
+
+    private func isAttachmentDrag(_ info: NSDraggingInfo) -> Bool {
+        store != nil && AttachmentPasteboard.hasAttachments(info.draggingPasteboard)
+    }
+
+    private func attachmentDragOperation() -> NSDragOperation {
+        let ok = store?.canAcceptAttachments ?? false
+        store?.setDropTargeted(ok)
+        return ok ? .copy : []
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        isAttachmentDrag(sender) ? attachmentDragOperation() : super.draggingEntered(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        isAttachmentDrag(sender) ? attachmentDragOperation() : super.draggingUpdated(sender)
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        store?.setDropTargeted(false)
+        super.draggingExited(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        isAttachmentDrag(sender) ? (store?.canAcceptAttachments ?? false) : super.prepareForDragOperation(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard isAttachmentDrag(sender), let store else { return super.performDragOperation(sender) }
+        store.setDropTargeted(false)
+        let added = store.addAttachments(AttachmentPasteboard.read(sender.draggingPasteboard))
+        if added { window?.makeFirstResponder(self) }
+        return added
+    }
+
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        store?.setDropTargeted(false)
+        if let sender, isAttachmentDrag(sender) { return }
+        super.concludeDragOperation(sender)
+    }
+
+    override func paste(_ sender: Any?) {
+        let pasteboard = NSPasteboard.general
+        if let store, store.canAcceptAttachments, AttachmentPasteboard.hasAttachments(pasteboard, forPaste: true) {
+            store.addAttachments(AttachmentPasteboard.read(pasteboard))
+            return
+        }
+        super.paste(sender)
+    }
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(paste(_:)), let store, store.canAcceptAttachments,
+           AttachmentPasteboard.hasAttachments(NSPasteboard.general, forPaste: true) {
+            return true
+        }
+        return super.validateUserInterfaceItem(item)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -246,6 +330,8 @@ struct ComposerFieldRepresentable: NSViewRepresentable {
         let coordinator = context.coordinator
         coordinator.field = field
         field.textView.delegate = coordinator
+        field.textView.store = store
+        field.textView.updateDragTypeRegistration()
         field.textView.string = store.draft
 
         store.$draft

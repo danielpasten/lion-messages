@@ -12,6 +12,10 @@ public final class LiveMessagesService: MessagesService {
     /// Uses the current user's `~/Library/Messages/chat.db`.
     public convenience init() {
         self.init(databasePath: ChatDatabase.defaultPath)
+        // Staged copies from earlier sends are no longer needed (Messages has long since read
+        // them). Only the real app does this; tests use their own outbox folders.
+        let outbox = sender.outbox
+        DispatchQueue.global(qos: .utility).async { outbox.cleanUp() }
     }
 
     /// Reads the chat.db at `databasePath` (for tests and tooling).
@@ -66,5 +70,9 @@ public final class LiveMessagesService: MessagesService {
 
     public func send(_ text: String, to conversation: Conversation) async throws {
         try await sender.send(text, to: conversation)
+    }
+
+    public func send(attachments: [URL], text: String, to conversation: Conversation) async throws {
+        try await sender.send(attachments: attachments, text: text, to: conversation)
     }
 }

@@ -15,14 +15,18 @@ struct LaunchOptions {
     var presentError: SendError?
     /// Snapshot the window in its inactive (not key) state.
     var inactive = false
-    /// Send the `--draft` text right after launch (exercises the send path in demo mode).
+    /// Send the `--draft` text and `--attach` files right after launch (exercises the send path in demo mode).
     var sendDraft = false
+    /// `--attach <path>` (repeatable): pending attachments added at launch.
+    var attachPaths: [String] = []
+    /// `--show-drop-highlight`: show the drag-and-drop highlight (to check its look).
+    var showDropHighlight = false
     var search: String?
     /// `--snapshot-sequence <dir> --frames N --interval ms`: capture N window frames, spaced by
     /// `interval`, starting the moment a trigger fires (send, error, incoming, access, focus, resize…).
     var sequenceDir: String?
     /// Only start the sequence at this trigger (send, error, incoming, access, focus, scroll,
-    /// resize, inactive); nil = the first one that fires.
+    /// resize, inactive, linkpreview); nil = the first one that fires.
     var sequenceOn: String?
     var frames = 12
     var intervalMs = 33.0
@@ -46,6 +50,9 @@ struct LaunchOptions {
     /// `--buddy-pictures on|off`: overrides the saved View ▸ Show Buddy Pictures setting for this
     /// launch only (not persisted).
     var buddyPictures: Bool?
+    /// `--fetch-link-previews on|off`: overrides View ▸ Fetch Missing Link Previews for this launch
+    /// only (not persisted).
+    var fetchLinkPreviews: Bool?
     /// `--toggle-buddy-pictures-after s`: flip the setting once, live (not persisted), to test it.
     var toggleBuddyPicturesAfter: Double?
 
@@ -80,6 +87,8 @@ struct LaunchOptions {
             case "--present-error": o.presentError = sendError(value())
             case "--inactive": o.inactive = true
             case "--send-draft": o.sendDraft = true
+            case "--attach": if let path = value() { o.attachPaths.append(path) }
+            case "--show-drop-highlight": o.showDropHighlight = true
             case "--search": o.search = value()
             case "--snapshot-sequence": o.sequenceDir = value()
             case "--sequence-on": o.sequenceOn = value()
@@ -99,6 +108,12 @@ struct LaunchOptions {
                 switch value()?.lowercased() {
                 case "on", "true", "1", "yes": o.buddyPictures = true
                 case "off", "false", "0", "no": o.buddyPictures = false
+                default: break
+                }
+            case "--fetch-link-previews":
+                switch value()?.lowercased() {
+                case "on", "true", "1", "yes": o.fetchLinkPreviews = true
+                case "off", "false", "0", "no": o.fetchLinkPreviews = false
                 default: break
                 }
             case "--toggle-buddy-pictures-after": o.toggleBuddyPicturesAfter = value().flatMap(Double.init)

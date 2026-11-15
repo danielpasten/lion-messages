@@ -41,6 +41,9 @@ final class TranscriptController: NSObject, NSTableViewDataSource, NSTableViewDe
     private var crossfade: TranscriptCrossfadeView?
     private var crossfadeTween: LionTween?
     private var crossfadeHold: DispatchWorkItem?
+    /// Rows that just gained a fetched link preview fade in (0…1) instead of arriving.
+    private var previewFades: [Int64: CGFloat] = [:]
+    private var previewFadeTween: LionTween?
 
     init(store: AppStore) {
         self.store = store
@@ -230,6 +233,11 @@ final class TranscriptController: NSObject, NSTableViewDataSource, NSTableViewDe
             return
         }
 
+        if case .linkPreviews(let ids) = new.reason {
+            applyLinkPreviews(new, ids: ids)
+            return
+        }
+
         // Same conversation, real diff: keep everything where it is on screen, then animate.
         let wasAtBottom = isAtBottom || pinnedToBottom
         let anchor = visibleAnchor()
@@ -248,6 +256,39 @@ final class TranscriptController: NSObject, NSTableViewDataSource, NSTableViewDe
         // A handful of new messages animate in; a big batch (e.g. a sync) just appears.
         if appended.count <= 3 {
             for m in appended { startArrival(of: m) }
+        }
+    }
+
+    /// Same messages, some now with a card: only those rows change height. The reader's position
+    /// is kept (or the bottom stays pinned) and the changed rows fade in briefly.
+    private func applyLinkPreviews(_ new: TranscriptState, ids: Set<Int64>) {
+        let wasPinned = pinnedToBottom && !isAnimatingScroll
+        let anchor = wasPinned ? nil : visibleAnchor()
+        state = new
+        rebuildRows()
+        let changedRows = IndexSet(ids.compactMap { messageRow[$0] })
+        tableView.noteHeightOfRows(withIndexesChanged: changedRows)
+        tableView.reloadData(forRowIndexes: changedRows, columnIndexes: IndexSet(integer: 0))
+        if let anchor { restore(anchor) } else if wasPinned { scrollToBottom() }
+
+        guard !LionMotion.reduceMotion, LionMotion.duration(LionMotion.linkPreviewFade) > 0 else { return }
+        previewFadeTween?.finish()
+        for id in ids { previewFades[id] = 0 }
+        setPreviewFade(ids, 0)
+        previewFadeTween = LionTween.run(duration: LionMotion.linkPreviewFade, curve: .easeOut, update: { [weak self] t in
+            self?.setPreviewFade(ids, t)
+        }, completion: { [weak self] in
+            self?.setPreviewFade(ids, 1)
+            ids.forEach { self?.previewFades[$0] = nil }
+        })
+    }
+
+    private func setPreviewFade(_ ids: Set<Int64>, _ alpha: CGFloat) {
+        for id in ids {
+            if previewFades[id] != nil { previewFades[id] = alpha }
+            guard let row = messageRow[id], let view = tableView.view(atColumn: 0, row: row, makeIfNecessary: false)
+            else { continue }
+            view.alphaValue = alpha
         }
     }
 
@@ -491,6 +532,7 @@ final class TranscriptController: NSObject, NSTableViewDataSource, NSTableViewDe
         }
         let id = rows[row].owner ?? 0
         applyArrivalState(to: view, id: id, progress: arrivals[id].map { _ in 0 })
+        view.alphaValue = previewFades[id] ?? 1
         return view
     }
 
