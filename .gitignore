@@ -1,0 +1,13 @@
+.build*/
+build/
+.swiftpm/
+*.xcodeproj
+xcuserdata/
+DerivedData/
+.DS_Store
+# Never commit Messages data or anything derived from it.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.abcddb
