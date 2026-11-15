@@ -44,6 +44,9 @@ Screenshots show the built-in demo data, not real conversations.
   and a click opens the conversation. None for the conversation you're reading, your own
   messages, spam, or filtered unknown senders. Messages.app posts its own notifications too; to
   avoid seeing both, turn Messages' off in System Settings ▸ Notifications
+- Narrow windows: below about 640 points wide the conversation list folds away; the toolbar's
+  list button (or View ▸ Show Conversations, ⌃⌘S) slides it in over the conversation. In a
+  wide window the same button hides or shows the list
 - Lion-style animations; respects Reduce Motion
 
 ## Requirements

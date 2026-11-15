@@ -52,37 +52,72 @@ struct RootView: View {
 
     private var conversationUI: some View {
         let p = LionTheme.palette(for: scheme)
-        return HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                SidebarScopeBarRepresentable(store: store)
-                    .frame(height: SidebarScopeBar.height)
-                SidebarRepresentable(store: store)
-                    .overlay {
-                        if store.filteredConversations.isEmpty && store.pinnedConversations.isEmpty {
-                            EtchedText(text: emptySidebarText, size: 14)
-                        }
+        let slide: AnyTransition = LionMotion.reduceMotion ? .opacity : .move(edge: .leading)
+        return ZStack(alignment: .leading) {
+            HStack(spacing: 0) {
+                if store.sidebarDocked {
+                    HStack(spacing: 0) {
+                        sidebarColumn
+                        Rectangle()
+                            .fill(Color(nsColor: p.sidebarDivider))
+                            .frame(width: 1)
                     }
+                    .transition(slide)
+                }
+                conversationColumn
             }
-            .frame(width: SidebarController.width - 1)
-            Rectangle()
-                .fill(Color(nsColor: p.sidebarDivider))
-                .frame(width: 1)
-            VStack(spacing: 0) {
-                TranscriptRepresentable(store: store)
-                    .overlay {
-                        if store.selectedConversationID == nil {
-                            EtchedText(text: "No Conversation Selected")
-                        }
-                    }
-                    // Files dragged over the conversation (transcript or composer) light it up.
-                    .overlay {
-                        if store.isDropTargeted {
-                            DropHighlight().transition(.opacity)
-                        }
-                    }
-                    .animation(LionMotion.easeOut(LionMotion.dropHighlight), value: store.isDropTargeted)
-                ComposerView(store: store)
+            // A narrow window: the list slides in over the transcript until a conversation is picked.
+            if store.sidebarOverlay && !store.sidebarDocked {
+                Color.black.opacity(LionMotion.sheetDim)
+                    .contentShape(Rectangle())
+                    .onTapGesture { store.dismissSidebarOverlay() }
+                    .transition(.opacity)
+                HStack(spacing: 0) {
+                    sidebarColumn
+                    Rectangle()
+                        .fill(Color(nsColor: p.sidebarDivider))
+                        .frame(width: 1)
+                }
+                .shadow(color: .black.opacity(0.35), radius: 8, x: 2)
+                .transition(slide)
+                .zIndex(1)
             }
+        }
+        .clipped()
+        .animation(LionMotion.easeOut(LionMotion.sidebarMove), value: store.sidebarDocked)
+        .animation(LionMotion.easeOut(LionMotion.sidebarMove), value: store.sidebarOverlay)
+    }
+
+    private var sidebarColumn: some View {
+        VStack(spacing: 0) {
+            SidebarScopeBarRepresentable(store: store)
+                .frame(height: SidebarScopeBar.height)
+            SidebarRepresentable(store: store)
+                .overlay {
+                    if store.filteredConversations.isEmpty && store.pinnedConversations.isEmpty {
+                        EtchedText(text: emptySidebarText, size: 14)
+                    }
+                }
+        }
+        .frame(width: SidebarController.width - 1)
+    }
+
+    private var conversationColumn: some View {
+        VStack(spacing: 0) {
+            TranscriptRepresentable(store: store)
+                .overlay {
+                    if store.selectedConversationID == nil {
+                        EtchedText(text: "No Conversation Selected")
+                    }
+                }
+                // Files dragged over the conversation (transcript or composer) light it up.
+                .overlay {
+                    if store.isDropTargeted {
+                        DropHighlight().transition(.opacity)
+                    }
+                }
+                .animation(LionMotion.easeOut(LionMotion.dropHighlight), value: store.isDropTargeted)
+            ComposerView(store: store)
         }
     }
 

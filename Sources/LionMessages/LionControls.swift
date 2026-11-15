@@ -85,7 +85,7 @@ final class LionScrollView: NSScrollView {
 // MARK: - Glyphs (Lion used small monochrome glyphs, not SF Symbols)
 
 enum LionGlyph {
-    case refresh, compose, paperclip, phone, video
+    case refresh, compose, paperclip, phone, video, sidebar
 
     /// Stroked outline, plus an optional filled part (arrow heads).
     func paths(in r: NSRect) -> (stroke: NSBezierPath, fill: NSBezierPath?) {
@@ -126,6 +126,19 @@ enum LionGlyph {
             pencil.line(to: NSPoint(x: r.midX - 0.5, y: r.midY + 5))
             pencil.close()
             p.append(pencil)
+        case .sidebar:
+            // A window with a list down its left side.
+            let frame = NSRect(x: r.minX + 0.75, y: r.minY + 2.25, width: r.width - 1.5, height: r.height - 4.5)
+            p.append(NSBezierPath(roundedRect: frame, xRadius: 1.5, yRadius: 1.5))
+            let split = (frame.minX + frame.width * 0.38).rounded() + 0.5
+            p.move(to: NSPoint(x: split, y: frame.minY))
+            p.line(to: NSPoint(x: split, y: frame.maxY))
+            for i in 0..<3 {
+                let y = frame.minY + 3 + CGFloat(i) * 2.5
+                p.move(to: NSPoint(x: frame.minX + 2, y: y))
+                p.line(to: NSPoint(x: split - 2, y: y))
+            }
+            p.lineWidth = 1.3
         case .phone:
             // An old-fashioned handset, earpiece up-left, mouthpiece down-right.
             let handset = NSBezierPath()

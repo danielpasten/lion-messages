@@ -115,6 +115,16 @@ final class AppStore: ObservableObject {
     /// Fires with conversations that just received a message worth a notification (not from the
     /// user, not spam, and not a filtered unknown sender).
     let newIncoming = PassthroughSubject<[Conversation], Never>()
+
+    /// View ▸ Hide Conversations (persisted): the list is folded away even in a wide window.
+    @Published private(set) var sidebarHiddenByUser: Bool
+    /// The window is too narrow for the list beside the transcript, so it folds away.
+    @Published private(set) var isNarrow = false
+    /// In a narrow window, the list slid in over the transcript for a moment.
+    @Published private(set) var sidebarOverlay = false
+    static let hideSidebarDefaultsKey = "HideConversationList"
+    /// Narrower than this, the transcript keeps the window to itself.
+    static let narrowWidth: CGFloat = 640
     private var incomingTracker = IncomingMessageTracker()
     /// View ▸ Filter Unknown Senders (persisted): unknown senders get their own list.
     @Published private(set) var filtersUnknownSenders: Bool
@@ -175,6 +185,7 @@ final class AppStore: ObservableObject {
         let defaults = UserDefaults.standard
         defaults.register(defaults: [Self.buddyPicturesDefaultsKey: true, Self.filterUnknownDefaultsKey: true])
         showBuddyPictures = buddyPicturesOverride ?? defaults.bool(forKey: Self.buddyPicturesDefaultsKey)
+        sidebarHiddenByUser = defaults.bool(forKey: Self.hideSidebarDefaultsKey)
         let filtering = filterUnknownOverride ?? defaults.bool(forKey: Self.filterUnknownDefaultsKey)
         filtersUnknownSenders = filtering
         scope = SidebarScope.scopes(filteringUnknown: filtering).contains(initialScope) ? initialScope : .known
@@ -625,8 +636,38 @@ final class AppStore: ObservableObject {
 
     // MARK: Selection
 
+    // MARK: Conversation list
+
+    /// The list sits beside the transcript (wide window, not hidden by the user).
+    var sidebarDocked: Bool { !sidebarHiddenByUser && !isNarrow }
+
+    /// The toolbar button and View ▸ Show/Hide Conversations: in a narrow window the list slides
+    /// in over the transcript; otherwise it is folded away or brought back beside it.
+    func toggleSidebar() {
+        if isNarrow {
+            sidebarOverlay.toggle()
+        } else {
+            sidebarHiddenByUser.toggle()
+            UserDefaults.standard.set(sidebarHiddenByUser, forKey: Self.hideSidebarDefaultsKey)
+            sidebarOverlay = false
+        }
+    }
+
+    func dismissSidebarOverlay() {
+        if sidebarOverlay { sidebarOverlay = false }
+    }
+
+    /// Called as the window resizes.
+    func setWindowWidth(_ width: CGFloat) {
+        let narrow = width < Self.narrowWidth
+        guard narrow != isNarrow else { return }
+        isNarrow = narrow
+        if !narrow { sidebarOverlay = false }
+    }
+
     func select(_ id: Int64?) {
-        guard id != selectedConversationID else { return }
+        guard id != selectedConversationID else { dismissSidebarOverlay(); return }
+        dismissSidebarOverlay()
         selectedConversationID = id
         transcript = TranscriptState(conversationID: id, isGroup: selectedConversation?.isGroup ?? false,
                                      messages: [], reason: .opened)

@@ -94,7 +94,8 @@ final class LionHostingView: NSHostingView<RootView> {
               AttachmentPasteboard.hasAttachments(info.draggingPasteboard) else { return false }
         let point = convert(info.draggingLocation, from: nil)
         let fromTop = isFlipped ? point.y : bounds.height - point.y
-        return point.x >= SidebarController.width && fromTop >= LionToolbarView.height
+        let sidebar = store.sidebarDocked || store.sidebarOverlay ? SidebarController.width : 0
+        return point.x >= sidebar && fromTop >= LionToolbarView.height
     }
 
     private func update(_ info: NSDraggingInfo) -> NSDragOperation {

@@ -192,6 +192,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 self.store.quickLook(attachmentID: ids[n])
             }
         }
+        if options.toggleSidebar {
+            after(0.6) { [weak self] in
+                self?.beginSequence("sidebar")
+                self?.store.toggleSidebar()
+            }
+        }
         if let target = options.focus {
             after(0.8) { [weak self] in
                 guard let self else { return }
@@ -248,7 +254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = false
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 720, height: 460)
+        window.minSize = NSSize(width: 460, height: 460)
         window.tabbingMode = .disallowed
         window.collectionBehavior.insert(.fullScreenPrimary)
         window.delegate = self
@@ -260,7 +266,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         window.setContentSize(size)
         window.center()
         window.setFrameAutosaveName(options.snapshotPath == nil && options.size == nil ? "LionMessagesMain" : "")
+        store.setWindowWidth(window.contentLayoutRect.width)
     }
+
+    func windowDidResize(_ notification: Notification) {
+        store.setWindowWidth(window.contentLayoutRect.width)
+    }
+
+    @objc private func toggleSidebar(_ sender: Any?) { store.toggleSidebar() }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { window.makeKeyAndOrderFront(nil) }
@@ -337,6 +350,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleBuddyPictures(_:)) {
             menuItem.state = store?.showBuddyPictures == true ? .on : .off
+        }
+        if menuItem.action == #selector(toggleSidebar(_:)) {
+            let showing = store?.sidebarDocked == true || store?.sidebarOverlay == true
+            menuItem.title = showing ? "Hide Conversations" : "Show Conversations"
         }
         if menuItem.action == #selector(toggleNotifications(_:)) {
             menuItem.state = notifications?.isEnabled == true ? .on : .off
@@ -511,6 +528,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let refresh = view.addItem(withTitle: "Refresh", action: #selector(refresh(_:)), keyEquivalent: "r")
         refresh.target = self
         view.addItem(.separator())
+        let sidebar = view.addItem(withTitle: "Hide Conversations", action: #selector(toggleSidebar(_:)), keyEquivalent: "s")
+        sidebar.keyEquivalentModifierMask = [.command, .control]
+        sidebar.target = self
         let buddies = view.addItem(withTitle: "Show Buddy Pictures", action: #selector(toggleBuddyPictures(_:)),
                                    keyEquivalent: "b")
         buddies.keyEquivalentModifierMask = [.command, .shift]

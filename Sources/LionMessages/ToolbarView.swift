@@ -13,18 +13,21 @@ final class LionToolbarView: LionView {
     }
 
     let searchField = LionSearchField()
+    private let sidebarButton: LionTexturedButton
     private let refreshButton: LionTexturedButton
     private let composeButton: LionTexturedButton
     let audioCallButton: LionTexturedButton
     let videoCallButton: LionTexturedButton
 
-    init(onRefresh: @escaping () -> Void, onCompose: @escaping () -> Void,
+    init(onToggleSidebar: @escaping () -> Void, onRefresh: @escaping () -> Void, onCompose: @escaping () -> Void,
          onAudioCall: @escaping () -> Void, onVideoCall: @escaping () -> Void) {
+        sidebarButton = LionTexturedButton(glyph: .sidebar, toolTip: "Show or Hide Conversations", action: onToggleSidebar)
         refreshButton = LionTexturedButton(glyph: .refresh, toolTip: "Refresh", action: onRefresh)
         composeButton = LionTexturedButton(glyph: .compose, toolTip: "Write a Message", action: onCompose)
         audioCallButton = LionTexturedButton(glyph: .phone, toolTip: "FaceTime Audio", action: onAudioCall)
         videoCallButton = LionTexturedButton(glyph: .video, toolTip: "FaceTime Video", action: onVideoCall)
         super.init(frame: .zero)
+        addSubview(sidebarButton)
         addSubview(refreshButton)
         addSubview(composeButton)
         addSubview(audioCallButton)
@@ -48,8 +51,9 @@ final class LionToolbarView: LionView {
         super.layout()
         let rowMid = Self.titleRowHeight + (bounds.height - Self.titleRowHeight) / 2 - 1
         // Buttons line up with the sidebar like Mail's toolbar did.
-        refreshButton.frame = NSRect(x: 14, y: rowMid - 11.5, width: 34, height: 23)
-        composeButton.frame = NSRect(x: 54, y: rowMid - 11.5, width: 34, height: 23)
+        sidebarButton.frame = NSRect(x: 14, y: rowMid - 11.5, width: 34, height: 23)
+        refreshButton.frame = NSRect(x: 54, y: rowMid - 11.5, width: 34, height: 23)
+        composeButton.frame = NSRect(x: 94, y: rowMid - 11.5, width: 34, height: 23)
         let searchWidth: CGFloat = min(206, max(120, bounds.width * 0.24))
         let halo = LionSearchField.halo
         searchField.frame = NSRect(x: bounds.width - searchWidth - 9 - halo, y: rowMid - 14 - halo,
@@ -122,6 +126,7 @@ struct ToolbarRepresentable: NSViewRepresentable {
 
     func makeNSView(context: Context) -> LionToolbarView {
         let view = LionToolbarView(
+            onToggleSidebar: { [weak store] in store?.toggleSidebar() },
             onRefresh: { [weak store] in store?.refresh() },
             onCompose: { [weak store] in store?.focusComposer.send() },
             onAudioCall: { [weak store] in store?.requestCall(.audio) },
