@@ -47,22 +47,84 @@ enum BubbleShape {
     /// The outline: `body` rounded by `radius`, plus the tail at its bottom corner (right for the
     /// user's own bubbles, left for everyone else's) when `tailed`.
     static func path(body b: NSRect, radius: CGFloat, tailed: Bool, isFromMe: Bool) -> CGPath {
+        let rounded = roundedBody(b, radius: radius)
+        guard tailed, let t = tailShape(body: b, isFromMe: isFromMe) else { return rounded }
+        return rounded.union(t)
+    }
+
+    private static func roundedBody(_ b: NSRect, radius: CGFloat) -> CGPath {
         let r = max(0, min(radius, b.width / 2, b.height / 2))
-        let rounded = CGPath(roundedRect: b, cornerWidth: r, cornerHeight: r, transform: nil)
-        guard tailed, b.height >= 12, b.width >= 20 else { return rounded }
-        // Built for the right side (flipped coordinates, y grows down), mirrored for the left.
-        let x = b.maxX, y = b.maxY
+        return CGPath(roundedRect: b, cornerWidth: r, cornerHeight: r, transform: nil)
+    }
+
+    /// The tail's points, traced from Messages' own balloon mask (at its 10.5 pt corner radius)
+    /// and scaled to this bubble's 12 pt one. Offsets from the body's bottom outer corner, for the
+    /// right side in flipped coordinates; mirrored for the left.
+    private static let scale: CGFloat = 12 / 10.5
+    private static let tailStart = CGPoint(x: -0.75 * scale, y: -7.25 * scale)
+    private static let outerControl = CGPoint(x: 0.82 * scale, y: -3.32 * scale)
+    private static let tailTip = CGPoint(x: 4.7 * scale, y: -1.2 * scale)
+    private static let lowerControl = CGPoint(x: -1.125 * scale, y: -0.675 * scale)
+    private static let notch = CGPoint(x: -4.6 * scale, y: -1.9 * scale)
+
+    private static func mirror(_ b: NSRect, isFromMe: Bool) -> CGAffineTransform {
+        let corner = CGAffineTransform(translationX: b.maxX, y: b.maxY)
+        guard !isFromMe else { return corner }
+        // Reflect around the body's vertical center line.
+        return corner.concatenating(CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: b.minX + b.maxX, ty: 0))
+    }
+
+    /// The tail as a closed shape (its inner part overlaps the body), or nil for tiny bodies.
+    static func tailShape(body b: NSRect, isFromMe: Bool) -> CGPath? {
+        guard b.height >= 14, b.width >= 24 else { return nil }
         let t = CGMutablePath()
-        t.move(to: CGPoint(x: x - 9, y: y - 8))
-        t.addLine(to: CGPoint(x: x - 0.5, y: y - 8))
-        // The outer edge leaves the body's side and sweeps out to the point...
-        t.addQuadCurve(to: CGPoint(x: x + tail - 0.5, y: y - 0.75), control: CGPoint(x: x, y: y - 2))
-        // ...and the lower edge runs back in, meeting the body in a small notch.
-        t.addQuadCurve(to: CGPoint(x: x - 8, y: y - 1.75), control: CGPoint(x: x - 1.5, y: y - 0.4))
+        // The outer edge leaves the body's side about 8 pt up and sweeps out to a blunt point
+        // just above the bottom line; the lower edge runs back in to a small notch.
+        t.move(to: tailStart)
+        t.addQuadCurve(to: tailTip, control: outerControl)
+        t.addQuadCurve(to: notch, control: lowerControl)
+        t.addLine(to: CGPoint(x: notch.x, y: tailStart.y))
         t.closeSubpath()
-        var mirror = CGAffineTransform.identity
-        if !isFromMe { mirror = CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: b.minX + b.maxX, ty: 0) }
-        return rounded.union(t.copy(using: &mirror)!)
+        var m = mirror(b, isFromMe: isFromMe)
+        return t.copy(using: &m)
+    }
+
+    /// Just the tail's two visible edges (outer sweep, lower edge), for the rims.
+    private static func tailEdges(body b: NSRect, isFromMe: Bool) -> (outer: CGPath, lower: CGPath) {
+        var m = mirror(b, isFromMe: isFromMe)
+        let outer = CGMutablePath()
+        outer.move(to: tailStart)
+        outer.addQuadCurve(to: tailTip, control: outerControl)
+        let lower = CGMutablePath()
+        lower.move(to: tailTip)
+        lower.addQuadCurve(to: notch, control: lowerControl)
+        return (outer.copy(using: &m)!, lower.copy(using: &m)!)
+    }
+
+    /// Light gathered in the tail, as in the original: the part past the body a little brighter,
+    /// a bright rim inside its lower edge and a fainter one inside its outer edge. Call while
+    /// clipped to the bubble's outline.
+    static func drawTailLight(body b: NSRect, radius: CGFloat, isFromMe: Bool, fill: CGFloat, lowerRim: CGFloat,
+                              outerRim: CGFloat, ctx: CGContext) {
+        guard let shape = tailShape(body: b, isFromMe: isFromMe) else { return }
+        let past = shape.subtracting(roundedBody(b, radius: radius))
+        ctx.saveGState()
+        ctx.addPath(past)
+        ctx.setFillColor(NSColor(white: 1, alpha: fill).cgColor)
+        ctx.fillPath()
+        ctx.restoreGState()
+        let edges = tailEdges(body: b, isFromMe: isFromMe)
+        ctx.saveGState()
+        ctx.setLineCap(.round)
+        ctx.setLineWidth(2.4)
+        ctx.addPath(edges.lower)
+        ctx.setStrokeColor(NSColor(white: 1, alpha: lowerRim).cgColor)
+        ctx.strokePath()
+        ctx.setLineWidth(2)
+        ctx.addPath(edges.outer)
+        ctx.setStrokeColor(NSColor(white: 1, alpha: outerRim).cgColor)
+        ctx.strokePath()
+        ctx.restoreGState()
     }
 
     /// The reflection: a pill set in from the outline across the top, brightest at the top edge
@@ -254,6 +316,8 @@ final class BubbleView: NSView {
         ctx.clip()
         fill.drawVertical(in: body.insetBy(dx: -BubbleShape.tail, dy: 0), flipped: true)
         BubbleShape.drawUnderglow(path: path, body: body, glow: 0.4 * k, rim: 0.6 * k, ctx: ctx)
+        BubbleShape.drawTailLight(body: body, radius: radius, isFromMe: isFromMe, fill: 0.18 * k, lowerRim: 0.55 * k,
+                                  outerRim: 0.3 * k, ctx: ctx)
         BubbleShape.drawBorder(path: path, color: isFromMe ? p.outgoingBorder : p.incomingBorder, ctx: ctx)
         ctx.restoreGState()
 
