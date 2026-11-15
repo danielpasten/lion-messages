@@ -109,6 +109,8 @@ LION_REAL_DB_SMOKE=1 swift test --filter RealDatabaseSmokeTests
 - No reactions, typing indicators, or read receipts
 - Attachments that are not downloaded to this Mac show a placeholder
 - Starting a new conversation is not implemented; reply in existing ones
+- Links sent from Lion Messages reach the recipient as plain links: Messages.app only attaches
+  a preview when you send from its own window. The card Lion Messages shows for them is local
 - Drags that only offer a file promise (some apps, such as Photos or Mail) can't be attached;
   drag from Finder, or export the item first
 
