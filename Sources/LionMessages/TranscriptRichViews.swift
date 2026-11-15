@@ -214,28 +214,50 @@ final class MediaView: ClickableView {
     /// Set by the row: a picture finished loading.
     var onImageLoaded: (() -> Void)?
 
+    /// Set by the row: show this attachment in Quick Look.
+    var onOpen: ((Int64) -> Void)?
+    private(set) var attachmentID: Int64 = 0
+
+    /// The picture's frame without the shadow margin.
+    private var body: NSRect {
+        NSRect(x: 1, y: 1, width: bounds.width - 2, height: bounds.height - 1 - BubbleMetrics.shadowRoom)
+    }
+
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func configure(attachment a: MessageAttachment, pixelSize: CGSize, isVideo: Bool, displaySize: NSSize, async: Bool) {
         self.pixelSize = pixelSize
         isSticker = a.isSticker && !isVideo
         self.isVideo = isVideo
+        attachmentID = a.id
         guard let url = a.fileURL else { slot.set(nil, async: false); return }
         let maxPixel = MediaLoader.maxPixel(source: isVideo ? .zero : pixelSize, display: displaySize,
                                             scale: TranscriptScale.current)
         slot.set(.init(id: "a\(a.id)", url: url, kind: isVideo ? .videoThumbnail : .image, maxPixel: maxPixel),
                  async: async)
-        onClick = {
-            if isVideo { NSWorkspace.shared.open(url) } else { QuickLookCoordinator.shared.preview(url) }
+        onClick = { [weak self] in
+            guard let self else { return }
+            self.onOpen?(self.attachmentID)
         }
         window?.invalidateCursorRects(for: self)
         needsDisplay = true
     }
 
+    /// The thumbnail as drawn, for Quick Look's zoom in and out.
+    var thumbnail: CGImage? { slot.image }
+
+    /// The picture's frame on screen, or nil when it is scrolled out of sight.
+    var screenFrame: NSRect? {
+        guard let window, !isHiddenOrHasHiddenAncestor else { return nil }
+        let visible = body.intersection(visibleRect)
+        guard visible.width > 4, visible.height > 4 else { return nil }
+        return window.convertToScreen(convert(body, to: nil))
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         let p = LionTheme.palette(for: effectiveAppearance)
-        let body = NSRect(x: 1, y: 1, width: bounds.width - 2, height: bounds.height - 1 - BubbleMetrics.shadowRoom)
+        let body = self.body
         if isSticker {
             if let image = slot.image { drawImage(image, in: body, ctx: ctx) }
             return
@@ -342,12 +364,16 @@ final class FileBubbleView: ClickableView {
 
 // MARK: - "+N more"
 
-final class MoreView: NSView {
+/// Shows the first picture or video that didn't fit in Quick Look.
+final class MoreView: ClickableView {
     static let font = LionFont.regular(11)
     static func label(_ n: Int) -> String { "+\(n) more" }
     var count = 0 { didSet { needsDisplay = true } }
     var alignRight = false
-    override var isFlipped: Bool { true }
+    override var hitRect: NSRect {
+        let w = NSAttributedString(string: Self.label(count), attributes: [.font: Self.font]).size().width + 2
+        return NSRect(x: alignRight ? bounds.width - w : 0, y: 0, width: w, height: bounds.height)
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         let p = LionTheme.palette(for: effectiveAppearance)
@@ -582,6 +608,8 @@ final class MessageCell: NSView {
     var loadsAsync = true
     /// A picture inside this row finished loading (the arrival stand-in re-renders).
     var onImageLoaded: (() -> Void)?
+    /// A picture, video or "+N more" was clicked: show that attachment in Quick Look.
+    var onOpenMedia: ((Int64) -> Void)?
     /// While a new message animates in, a stand-in draws it and the real views wait hidden.
     var isArriving = false { didSet { if isArriving != oldValue { applyHidden() } } }
 
@@ -615,6 +643,7 @@ final class MessageCell: NSView {
             for view in partViews {
                 let notify: () -> Void = { [weak self] in self?.onImageLoaded?() }
                 (view as? MediaView)?.onImageLoaded = notify
+                (view as? MediaView)?.onOpen = { [weak self] id in self?.onOpenMedia?(id) }
                 (view as? LinkCardView)?.onImageLoaded = notify
             }
             partKinds = kinds
@@ -630,6 +659,14 @@ final class MessageCell: NSView {
             case (.more(let n), let v as MoreView):
                 v.count = n
                 v.alignRight = m.isFromMe
+                let shown = Set(g.parts.compactMap { part -> Int64? in
+                    if case .media(let a, _, _) = part.part { return a.id } else { return nil }
+                })
+                let hidden = m.attachments.first { a in
+                    !shown.contains(a.id) && a.fileURL != nil && (a.kind == .image || a.kind == .video)
+                }
+                v.onClick = hidden.map { a in { [weak self] in self?.onOpenMedia?(a.id) } }
+                v.window?.invalidateCursorRects(for: v)
             case (.card(let preview, let id, let imageSize), let v as LinkCardView):
                 if let layout = placed.card {
                     v.configure(preview: preview, messageID: id, imagePixelSize: imageSize, layout: layout, async: loadsAsync)
@@ -658,6 +695,11 @@ final class MessageCell: NSView {
     }
 
     func setAvatar(_ image: NSImage?) { avatarView.image = image }
+
+    /// The picture or video thumbnail for an attachment, when this row shows it.
+    func mediaView(forAttachment id: Int64) -> MediaView? {
+        partViews.lazy.compactMap { $0 as? MediaView }.first { $0.attachmentID == id }
+    }
 
     private func applyHidden() {
         partViews.forEach { $0.isHidden = isArriving }

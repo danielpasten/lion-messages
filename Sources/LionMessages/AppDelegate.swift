@@ -174,6 +174,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 self.store.setShowBuddyPictures(!self.store.showBuddyPictures, persist: false)
             }
         }
+        if let n = options.openMedia {
+            after(options.openMediaAfter) { [weak self] in
+                guard let self else { return }
+                let ids = self.store.transcript.messages.flatMap(\.attachments)
+                    .filter { $0.fileURL != nil && ($0.kind == .image || $0.kind == .video) && !$0.isSticker }
+                    .map(\.id)
+                guard ids.indices.contains(n) else { return }
+                self.beginSequence("media")
+                self.store.quickLook(attachmentID: ids[n])
+            }
+        }
         if let target = options.focus {
             after(0.8) { [weak self] in
                 guard let self else { return }

@@ -27,6 +27,8 @@ Screenshots show the built-in demo data, not real conversations.
   the composer and are sent before the text
 - Inline images, video thumbnails, file bubbles, clickable links, and link preview cards
   built from the preview data Messages already stored
+- Pictures and videos open in the Quick Look panel, zooming out of their thumbnail; ← and →
+  move through every picture and video in the conversation (Space or Esc closes it)
 - Link previews for links you sent that have no stored preview (View ▸ Fetch Missing Link
   Previews, on by default; see [Network access](#network-access))
 - Pinned conversations as a grid of buddy pictures at the top of the list, the same pins as

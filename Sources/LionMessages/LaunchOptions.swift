@@ -53,6 +53,10 @@ struct LaunchOptions {
     /// `--fetch-link-previews on|off`: overrides View ▸ Fetch Missing Link Previews for this launch
     /// only (not persisted).
     var fetchLinkPreviews: Bool?
+    /// `--open-media N`: show the Nth picture or video (0-based, oldest first) of the selected
+    /// conversation in Quick Look, `--open-media-after` seconds after launch (default 1).
+    var openMedia: Int?
+    var openMediaAfter = 1.0
     /// `--toggle-buddy-pictures-after s`: flip the setting once, live (not persisted), to test it.
     var toggleBuddyPicturesAfter: Double?
     /// `--scope known|unknown|spam`: the sender list to start on.
@@ -135,6 +139,8 @@ struct LaunchOptions {
                 case "video": o.call = .video
                 default: break
                 }
+            case "--open-media": o.openMedia = value().flatMap(Int.init)
+            case "--open-media-after": o.openMediaAfter = value().flatMap(Double.init) ?? o.openMediaAfter
             case "--toggle-buddy-pictures-after": o.toggleBuddyPicturesAfter = value().flatMap(Double.init)
             default: break // Ignore unknown flags (e.g. -NSDocumentRevisionsDebugMode from Xcode).
             }

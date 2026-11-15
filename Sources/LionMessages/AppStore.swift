@@ -94,7 +94,10 @@ final class AppStore: ObservableObject {
     @Published private(set) var filteredConversations: [Conversation] = []
     @Published var searchText = "" { didSet { if searchText != oldValue { applyFilter() } } }
     @Published private(set) var selectedConversationID: Int64?
-    @Published private(set) var transcript = TranscriptState.empty
+    @Published private(set) var transcript = TranscriptState.empty {
+        // Quick Look shows the open conversation's media: close it when another one opens.
+        didSet { if transcript.conversationID != oldValue.conversationID { QuickLookCoordinator.shared.close() } }
+    }
     @Published var draft = ""
     /// Files waiting to be sent with the draft. Global, like the text draft.
     @Published private(set) var pendingAttachments: [PendingAttachment] = []
@@ -206,6 +209,26 @@ final class AppStore: ObservableObject {
                                          messages: linkPreviews.decorate(transcript.messages), reason: .linkPreviews(changed))
             linkPreviews.request(for: transcript.messages)
         }
+    }
+
+    // MARK: Quick Look
+
+    /// Shows an attachment in the Quick Look panel, with every other picture and video of the
+    /// conversation a ← → away (oldest first). A sticker is shown on its own.
+    func quickLook(attachmentID: Int64) {
+        var items: [QuickLookCoordinator.Item] = []
+        var clicked: QuickLookCoordinator.Item?
+        for m in transcript.messages {
+            for a in m.attachments {
+                guard let url = a.fileURL, a.kind == .image || a.kind == .video else { continue }
+                let item = QuickLookCoordinator.Item(id: a.id, url: url)
+                if a.id == attachmentID { clicked = item }
+                if !(a.isSticker && a.kind == .image) { items.append(item) }
+            }
+        }
+        guard let clicked else { return }
+        if !items.contains(clicked) { items = [clicked] }
+        QuickLookCoordinator.shared.preview(items, current: clicked)
     }
 
     // MARK: Buddy pictures

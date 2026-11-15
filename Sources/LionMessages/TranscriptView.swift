@@ -60,6 +60,8 @@ final class TranscriptController: NSObject, NSTableViewDataSource, NSTableViewDe
         tableView.dataSource = self
         tableView.delegate = self
         tableView.onAppearanceChange = { [weak self] in self?.applyAppearance() }
+        // Quick Look zooms out of (and back into) the thumbnail when it's on screen.
+        QuickLookCoordinator.shared.thumbnailLookup = { [weak self] id in self?.thumbnail(forAttachment: id) }
         scrollView.documentView = tableView
         scrollView.drawsBackground = true
         applyAppearance()
@@ -528,12 +530,25 @@ final class TranscriptController: NSObject, NSTableViewDataSource, NSTableViewDe
             // Plain text rows and rich rows reuse separately (their subviews differ).
             let cell = reuse(MessageCell.self, layout.isPlain(m) ? "Bubble" : "Rich")
             cell.configure(message: m, geometry: geometry(m, gap: gap, slot: slot), avatar: buddyPicture(for: m, slot: slot))
+            cell.onOpenMedia = { [weak self] id in self?.store?.quickLook(attachmentID: id) }
             view = cell
         }
         let id = rows[row].owner ?? 0
         applyArrivalState(to: view, id: id, progress: arrivals[id].map { _ in 0 })
         view.alphaValue = previewFades[id] ?? 1
         return view
+    }
+
+    /// The on-screen frame and picture of an attachment's thumbnail, if a visible row shows it.
+    private func thumbnail(forAttachment id: Int64) -> (frame: NSRect, image: CGImage?)? {
+        let range = tableView.rows(in: tableView.visibleRect)
+        guard range.length > 0 else { return nil }
+        for row in range.location..<(range.location + range.length) {
+            guard let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? MessageCell,
+                  let media = cell.mediaView(forAttachment: id), let frame = media.screenFrame else { continue }
+            return (frame, media.thumbnail)
+        }
+        return nil
     }
 
     private func reuse<T: NSView>(_ type: T.Type, _ id: String) -> T {

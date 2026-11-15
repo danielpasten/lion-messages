@@ -214,20 +214,35 @@ final class MediaLoader {
     }
 }
 
-/// Opens a picture in the Quick Look panel (falls back to the default app).
+/// Shows pictures and videos in the system Quick Look panel: its own floating window that zooms
+/// out of the clicked thumbnail, with ← → (and the panel's arrows) moving through the
+/// conversation's pictures and videos. Falls back to the default app if the panel can't be used.
 @MainActor
-final class QuickLookCoordinator: NSObject, QLPreviewPanelDataSource {
+final class QuickLookCoordinator: NSObject, QLPreviewPanelDataSource, QLPreviewPanelDelegate {
     static let shared = QuickLookCoordinator()
-    private var url: URL?
 
-    func preview(_ url: URL) {
-        self.url = url
+    struct Item: Equatable {
+        /// Attachment ROWID.
+        let id: Int64
+        let url: URL
+    }
+
+    private var items: [Item] = []
+    private var startIndex = 0
+    /// Set by the transcript: where an attachment's thumbnail is on screen right now, if visible.
+    var thumbnailLookup: ((Int64) -> (frame: NSRect, image: CGImage?)?)?
+
+    func preview(_ items: [Item], current: Item) {
+        self.items = items
+        startIndex = items.firstIndex(of: current) ?? 0
         guard let panel = QLPreviewPanel.shared() else {
-            NSWorkspace.shared.open(url)
+            NSWorkspace.shared.open(current.url)
             return
         }
-        if panel.isVisible {
+        if panel.isVisible, panel.dataSource === self {
             panel.reloadData()
+            panel.currentPreviewItemIndex = startIndex
+            panel.makeKeyAndOrderFront(nil)
             return
         }
         panel.updateController()
@@ -235,25 +250,62 @@ final class QuickLookCoordinator: NSObject, QLPreviewPanelDataSource {
         if panel.currentController == nil {
             // Nothing in the responder chain took control of the panel: use the default app.
             panel.orderOut(nil)
-            NSWorkspace.shared.open(url)
+            NSWorkspace.shared.open(current.url)
         }
+    }
+
+    /// Closes the panel if it is showing our items.
+    func close() {
+        guard QLPreviewPanel.sharedPreviewPanelExists(), let panel = QLPreviewPanel.shared(),
+              panel.isVisible, panel.dataSource === self else { return }
+        panel.orderOut(nil)
     }
 
     /// Called from the responder chain (`AppDelegate`) when the panel looks for a controller.
     func begin(_ panel: QLPreviewPanel) {
         panel.dataSource = self
+        panel.delegate = self
         panel.reloadData()
+        panel.currentPreviewItemIndex = startIndex
     }
 
     func end(_ panel: QLPreviewPanel) {
         panel.dataSource = nil
+        panel.delegate = nil
     }
 
+    private func item(for previewItem: QLPreviewItem?) -> Item? {
+        guard let url = previewItem?.previewItemURL else { return nil }
+        return items.first { $0.url == url }
+    }
+
+    // MARK: Data source
+
     nonisolated func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
-        MainActor.assumeIsolated { url == nil ? 0 : 1 }
+        MainActor.assumeIsolated { items.count }
     }
 
     nonisolated func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
-        MainActor.assumeIsolated { url as NSURL? }
+        MainActor.assumeIsolated { items.indices.contains(index) ? items[index].url as NSURL : nil }
+    }
+
+    // MARK: Delegate (zoom out of and back into the thumbnail)
+
+    nonisolated func previewPanel(_ panel: QLPreviewPanel!, sourceFrameOnScreenFor item: QLPreviewItem!) -> NSRect {
+        MainActor.assumeIsolated {
+            guard let found = self.item(for: item), let thumb = thumbnailLookup?(found.id) else { return .zero }
+            return thumb.frame
+        }
+    }
+
+    nonisolated func previewPanel(_ panel: QLPreviewPanel!, transitionImageFor item: QLPreviewItem!,
+                                  contentRect: UnsafeMutablePointer<NSRect>!) -> Any! {
+        MainActor.assumeIsolated {
+            guard let found = self.item(for: item), let thumb = thumbnailLookup?(found.id),
+                  let image = thumb.image else { return nil }
+            let size = NSSize(width: image.width, height: image.height)
+            contentRect?.pointee = NSRect(origin: .zero, size: size)
+            return NSImage(cgImage: image, size: size)
+        }
     }
 }
