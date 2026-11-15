@@ -409,6 +409,19 @@ struct MessageGeometry {
         return NSRect(x: x - 1, y: y - 1, width: s + 2, height: s + 1 + BubbleMetrics.shadowRoom)
     }
 
+    /// Whether a row laid out with `other` looks the same as with this one at any cell width
+    /// (same message assumed): its views only need placing, not configuring or redrawing.
+    func sameLayout(as other: MessageGeometry) -> Bool {
+        guard rowHeight == other.rowHeight, avatarY == other.avatarY, sideInset == other.sideInset,
+              reactionWidth == other.reactionWidth, parts.count == other.parts.count else { return false }
+        for (a, b) in zip(parts, other.parts) {
+            guard a.size == b.size, a.y == b.y, a.text?.size == b.text?.size,
+                  a.text?.containerWidth == b.text?.containerWidth, a.card?.width == b.card?.width,
+                  a.card?.height == b.card?.height else { return false }
+        }
+        return true
+    }
+
     /// Everything the row draws (parts and picture), for the arrival animation.
     func contentFrame(cellWidth: CGFloat) -> NSRect {
         var r = parts.indices.map { viewFrame($0, cellWidth: cellWidth) }.reduce(NSRect.null) { $0.union($1) }
@@ -429,7 +442,9 @@ final class TranscriptLayout {
     private struct CardKey: Hashable { let id: Int64; let width: Int }
     private struct GeometryKey: Hashable {
         let id: Int64
-        let width: Int
+        /// The widest a line of text may be: the only thing a row's geometry takes from the
+        /// column's width, and a whole number, so many window widths share one entry.
+        let textMax: Int
         let gap: Int
         let slot: AvatarSlot
     }
@@ -454,15 +469,15 @@ final class TranscriptLayout {
     }
 
     func geometry(for m: Message, columnWidth: CGFloat, gap: CGFloat, slot: AvatarSlot) -> MessageGeometry {
-        let key = GeometryKey(id: m.id, width: Int((columnWidth * 4).rounded()), gap: Int((gap * 4).rounded()), slot: slot)
+        let textMax = Self.maxTextWidth(columnWidth: columnWidth, slot: slot)
+        let key = GeometryKey(id: m.id, textMax: Int(textMax), gap: Int((gap * 4).rounded()), slot: slot)
         if let g = geometries[key], contents[m.id]?.message == m { return g }
-        let g = makeGeometry(m, columnWidth: columnWidth, gap: gap, slot: slot)
+        let g = makeGeometry(m, textMax: textMax, gap: gap, slot: slot)
         geometries[key] = g
         return g
     }
 
-    private func makeGeometry(_ m: Message, columnWidth: CGFloat, gap: CGFloat, slot: AvatarSlot) -> MessageGeometry {
-        let textMax = Self.maxTextWidth(columnWidth: columnWidth, slot: slot)
+    private func makeGeometry(_ m: Message, textMax: CGFloat, gap: CGFloat, slot: AvatarSlot) -> MessageGeometry {
         let bubbleMax = textMax + 2 * BubbleMetrics.padX
         let mediaMax = min(260, bubbleMax)
         let cardWidth = min(300, bubbleMax)

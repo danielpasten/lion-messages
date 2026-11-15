@@ -281,12 +281,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                         let t = CGFloat(i) / CGFloat(steps)
                         let w = start.width + (end.width - start.width) * t
                         let h = start.height + (end.height - start.height) * t
+                        let began = CACurrentMediaTime()
                         self.window.setFrame(NSRect(x: start.minX, y: start.maxY - h, width: w, height: h), display: true)
+                        CATransaction.flush()
+                        self.resizeStepTimes.append((CACurrentMediaTime() - began) * 1000)
+                        if i == steps, steps > 1 {
+                            // Development aid: how long each step of the simulated drag took.
+                            let sorted = self.resizeStepTimes.sorted()
+                            print(String(format: "resize: %d steps, mean %.2f ms, median %.2f ms, max %.2f ms", steps,
+                                         sorted.reduce(0, +) / Double(steps), sorted[steps / 2], sorted[steps - 1]))
+                            fflush(stdout)
+                        }
                     }
                 }
             }
         }
     }
+
+    private var resizeStepTimes: [Double] = []
 
     private func findTranscriptScrollView(in view: NSView?) -> NSScrollView? {
         guard let view else { return nil }

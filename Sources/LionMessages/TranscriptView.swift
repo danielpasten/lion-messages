@@ -33,6 +33,8 @@ final class TranscriptController: NSObject, NSTableViewDataSource, NSTableViewDe
     private var state = TranscriptState.empty
     private var pinnedToBottom = true
     private var lastWidth: CGFloat = 0
+    /// The height the table was last given for each row (-1 = not asked yet).
+    private var rowHeights: [CGFloat] = []
     private var cancellables: Set<AnyCancellable> = []
 
     // Motion
@@ -124,15 +126,13 @@ final class TranscriptController: NSObject, NSTableViewDataSource, NSTableViewDe
         let width = columnWidth
         let wasPinned = pinnedToBottom
         if abs(width - lastWidth) > 0.5 {
-            // The column changed width (live resize, full screen, zoom): every bubble re-wraps to
-            // the new maximum width and every row height is recomputed. No arrival animations.
+            // The column changed width (live resize, full screen, zoom): bubbles re-wrap to the
+            // new maximum width. No arrival animations.
             lastWidth = width
             finishArrivals()
             let anchor = wasPinned ? nil : visibleAnchor()
             layout.trimCache(keeping: Set(state.messages.map(\.id)))
-            // A full reload re-queries every row height (measurements are cached per width) and
-            // reconfigures the visible cells; noteHeightOfRows left stale heights behind.
-            tableView.reloadData()
+            relayoutForWidth()
             if let anchor { restore(anchor) }
         }
         // A running scroll animation retargets the (new) bottom by itself.
@@ -143,6 +143,29 @@ final class TranscriptController: NSObject, NSTableViewDataSource, NSTableViewDe
                 guard let self, self.pinnedToBottom, !self.isAnimatingScroll else { return }
                 if abs(self.scrollView.contentView.bounds.minY - self.bottomY) > 0.25 { self.scrollToBottom() }
             }
+        }
+    }
+
+    /// Fits the rows to a new column width in place. This runs for every frame of a live resize,
+    /// so it touches only what changed: rows whose height differs are re-tiled, visible bubbles
+    /// that wrap differently are configured again, and everything else just moves with its cell.
+    /// (Reloading the table instead rebuilt and redrew every visible row on every frame.)
+    private func relayoutForWidth() {
+        var changed = IndexSet()
+        for (row, entry) in rows.enumerated() {
+            guard case .message(let m, let gap, let slot) = entry else { continue }
+            if geometry(m, gap: gap, slot: slot).rowHeight != rowHeights[row] { changed.insert(row) }
+        }
+        if !changed.isEmpty {
+            NSAnimationContext.beginGrouping()
+            NSAnimationContext.current.duration = 0
+            tableView.noteHeightOfRows(withIndexesChanged: changed)
+            NSAnimationContext.endGrouping()
+        }
+        tableView.enumerateAvailableRowViews { rowView, row in
+            guard row < rows.count, case .message(let m, let gap, let slot) = rows[row],
+                  let cell = rowView.view(atColumn: 0) as? MessageCell else { return }
+            cell.widthChanged(message: m, geometry: geometry(m, gap: gap, slot: slot), avatar: buddyPicture(for: m, slot: slot))
         }
     }
 
@@ -338,6 +361,7 @@ final class TranscriptController: NSObject, NSTableViewDataSource, NSTableViewDe
         out.append(.padding(12))
         rows = out
         messageRow = index
+        rowHeights = Array(repeating: -1, count: out.count)
     }
 
     private func geometry(_ m: Message, gap: CGFloat, slot: AvatarSlot) -> MessageGeometry {
@@ -507,7 +531,9 @@ final class TranscriptController: NSObject, NSTableViewDataSource, NSTableViewDe
         case .timestamp: return 28
         case .sender: return 16
         case .message(let m, let gap, let slot):
-            return geometry(m, gap: gap, slot: slot).rowHeight
+            let height = geometry(m, gap: gap, slot: slot).rowHeight
+            rowHeights[row] = height
+            return height
         }
     }
 

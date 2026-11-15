@@ -843,6 +843,24 @@ final class MessageCell: NSView {
 
     func setAvatar(_ image: NSImage?) { avatarView.image = image }
 
+    /// The column changed width under a row that keeps its message: bubbles that still measure
+    /// the same are only moved (by `layout`), the rest are configured again.
+    func widthChanged(message m: Message, geometry g: MessageGeometry, avatar: NSImage?) {
+        if let old = geometry, old.sameLayout(as: g) {
+            geometry = g
+            needsLayout = true
+        } else {
+            configure(message: m, geometry: g, avatar: avatar)
+        }
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let changed = newSize.width != frame.width
+        super.setFrameSize(newSize)
+        // Outgoing bubbles hang off the right edge.
+        if changed { needsLayout = true }
+    }
+
     /// The picture or video thumbnail for an attachment, when this row shows it.
     func mediaView(forAttachment id: Int64) -> MediaView? {
         partViews.lazy.compactMap { $0 as? MediaView }.first { $0.attachmentID == id }
