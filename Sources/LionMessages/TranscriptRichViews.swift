@@ -28,6 +28,23 @@ private func fillRect(for size: CGSize, in target: NSRect) -> NSRect {
     return NSRect(x: target.midX - w / 2, y: target.midY - h / 2, width: w, height: h)
 }
 
+/// The "wet" reflection of iChat and iPhone bubbles: the shape's outline inset from its edge,
+/// brightest at the top and ending in a crisp horizontal line `depth` points down.
+func drawReflection(in body: NSRect, radius: CGFloat, depth: CGFloat, color: NSColor,
+                    top: CGFloat, bottom: CGFloat, ctx: CGContext) {
+    let shape = body.insetBy(dx: 2, dy: 1.5)
+    let height = min(depth, shape.height)
+    guard shape.width > 6, height > 3 else { return }
+    let r = max(0, min(radius - 2, shape.width / 2, shape.height / 2))
+    let band = NSRect(x: shape.minX, y: shape.minY, width: shape.width, height: height.rounded())
+    ctx.saveGState()
+    ctx.addPath(CGPath(roundedRect: shape, cornerWidth: r, cornerHeight: r, transform: nil))
+    ctx.clip()
+    ctx.clip(to: band)
+    LionGradient(color.withAlphaComponent(top), color.withAlphaComponent(bottom)).drawVertical(in: band, flipped: true)
+    ctx.restoreGState()
+}
+
 /// One picture slot: asks the loader, ignores results that arrive after the view was reused.
 @MainActor
 final class MediaSlot {
@@ -164,12 +181,16 @@ final class BubbleView: NSView {
         ctx.clip()
         fill.drawVertical(in: body, flipped: true)
 
-        // Gloss: a soft white sheen over the top half.
-        let gloss = NSRect(x: body.minX, y: body.minY, width: body.width, height: body.height * 0.5)
+        // A soft glow rising from the bottom edge (light passing through the gel).
         let g = p.bubbleGloss.alphaComponent
-        LionGradient(p.bubbleGloss.withAlphaComponent(g * 0.75),
-                     p.bubbleGloss.withAlphaComponent(g * 0.2)).drawVertical(in: gloss, flipped: true)
+        let glow = NSRect(x: body.minX, y: body.maxY - body.height * 0.4, width: body.width, height: body.height * 0.4)
+        LionGradient(p.bubbleGloss.withAlphaComponent(0), p.bubbleGloss.withAlphaComponent(g * 0.3))
+            .drawVertical(in: glow, flipped: true)
         ctx.restoreGState()
+
+        // The reflection across the top, down to about the middle of the first line.
+        drawReflection(in: body, radius: radius, depth: min(body.height * 0.5, 14), color: p.bubbleGloss,
+                       top: g * 0.95, bottom: g * 0.4, ctx: ctx)
 
         // Inner 1px highlight fading out down the top half.
         let inner = body.insetBy(dx: 1, dy: 1)
@@ -276,6 +297,9 @@ final class MediaView: ClickableView {
             ctx.clip()
             drawImage(image, in: fillRect(for: CGSize(width: image.width, height: image.height), in: body), ctx: ctx)
             ctx.restoreGState()
+            // Glass over the picture, like a photo in an iPhone bubble.
+            drawReflection(in: body, radius: Self.radius, depth: body.height * 0.42, color: .white,
+                           top: 0.34, bottom: 0.07, ctx: ctx)
         }
         if isVideo { Self.drawPlayGlyph(center: NSPoint(x: body.midX, y: body.midY), ctx: ctx) }
 
